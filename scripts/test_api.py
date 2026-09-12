@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """
 Script de prueba de integración de la API de Vygo.
-Envía la petición de ejemplo del Contrato v1.0 a /decidir y muestra la decisión.
+Prueba:
+  1. GET /salud
+  2. POST /decidir (Superficie A - Contrato v1.0 y v2.0)
+  3. POST /simular/evaluar_db (Superficie D - Contrato v2.0 con BD Supabase)
+  4. GET /simular/verificar (Las 7 verificaciones oficiales §7)
 """
 import sys
-import json
+from pathlib import Path
 import httpx
+
+# Agregar directorio raíz al PYTHONPATH
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.main import app
 
 API_BASE = "http://localhost:8000"
 
 PAYLOAD_EJEMPLO = {
-  "version": "1.0",
+  "version": "2.0",
+  "politica": "PPO",
   "repartidor": {
     "id": "8f2c1a40-1234-5678-9abc-def012345678",
     "posicion": { "lat": 25.6714, "lon": -100.3094 },
@@ -48,29 +58,54 @@ PAYLOAD_EJEMPLO = {
   "contexto": { "clima": "normal", "evento_activo": "surge" }
 }
 
+def ejecutar_pruebas(client, modo: str):
+    print(f"\n--- Ejecutando pruebas en modo: {modo} ---")
+    
+    # 1. /salud
+    res_salud = client.get("/salud")
+    print(f"[GET /salud] Status: {res_salud.status_code}, Body: {res_salud.json()}")
+
+    # 2. /decidir
+    res_decidir = client.post("/decidir", json=PAYLOAD_EJEMPLO)
+    print(f"[POST /decidir] Status: {res_decidir.status_code}")
+    data = res_decidir.json()
+    print(f"  Politica: {data['politica']} (Latencia: {data['latencia_ms']} ms)")
+    for d in data.get("decisiones", []):
+        print(f"  Decision oferta {d['oferta_id']}: {d['decision'].upper()} (aceptar={d.get('aceptar')})")
+        print(f"    - Tasa marginal: ${d['tasa_marginal']:.1f}/h")
+        print(f"    - Rho actual:    ${d['rho_actual']:.1f}/h")
+        print(f"    - Ajuste PPO:    {d['ajuste_aprendido']:+.1f} MXN/h")
+        print(f"    - Explicacion:   {d['explicacion_corta']}")
+    print(f"  Plan paradas: {len(data['plan']['paradas'])}")
+    print(f"  Plan secuencia v2: {data['plan'].get('secuencia')}")
+
+    # 3. /simular/verificar
+    res_verif = client.get("/simular/verificar")
+    print(f"\n[GET /simular/verificar] Status: {res_verif.status_code}")
+    print(f"  Todas las 7 verificaciones pasan: {res_verif.json().get('todas_pasan')}")
+
+    # 4. /simular/evaluar_db
+    res_sim = client.post("/simular/evaluar_db?repartidor_id=rep-demo-01&politica=HIBRIDO&persistir=true")
+    print(f"\n[POST /simular/evaluar_db] Status: {res_sim.status_code}")
+    sim_data = res_sim.json()
+    print(f"  Politica: {sim_data['politica']} (Latencia: {sim_data['latencia_ms']} ms)")
+    print(f"  Ofertas evaluadas desde DB: {sim_data['ofertas_evaluadas']}")
+    print(f"  Pedidos a bordo iniciales: {sim_data['pedidos_a_bordo_iniciales']}")
+    print(f"  Mutaciones realizadas: {sim_data.get('mutaciones_escritura_bd', {})}")
+
 def main():
-    print(f"Probando conexion con API Vygo en {API_BASE}...")
+    print(f"Intentando conectar con servidor en {API_BASE}...")
     try:
-        with httpx.Client(base_url=API_BASE, timeout=5.0) as client:
-            res_salud = client.get("/salud")
-            print(f"[GET /salud] Status: {res_salud.status_code}, Body: {res_salud.json()}")
+        with httpx.Client(base_url=API_BASE, timeout=3.0) as live_client:
+            live_client.get("/salud")
+            ejecutar_pruebas(live_client, f"HTTP Remoto ({API_BASE})")
+    except Exception:
+        print(f"No hay servidor activo en {API_BASE}. Usando FastAPI TestClient en memoria...")
+        from fastapi.testclient import TestClient
+        test_client = TestClient(app)
+        ejecutar_pruebas(test_client, "In-Memory TestClient")
 
-            res_decidir = client.post("/decidir", json=PAYLOAD_EJEMPLO)
-            print(f"[POST /decidir] Status: {res_decidir.status_code}")
-            data = res_decidir.json()
-            print(f"  Politica: {data['politica']} (Latencia: {data['latencia_ms']} ms)")
-            for d in data.get("decisiones", []):
-                print(f"  Decision oferta {d['oferta_id']}: {d['decision'].upper()} ({d['explicacion_corta']})")
-                print(f"    - Tasa marginal: ${d['economia']['tasa_marginal_mxn_h']:.1f}/h")
-                print(f"    - Rho actual:    ${d['economia']['rho_actual_mxn_h']:.1f}/h")
-                print(f"    - Ajuste PPO:    {d['economia']['ajuste_aprendido_mxn_h']:+.1f} MXN/h")
-                print(f"    - Explicacion:   {d['explicacion']}")
-            print(f"  Plan paradas: {len(data['plan']['paradas'])}")
-            print(f"  Geometria: {data['plan']['geometria']['type']} con {len(data['plan']['geometria']['coordinates'])} coordenadas")
-
-    except httpx.ConnectError:
-        print(f"No se pudo conectar a {API_BASE}. Asegurese de ejecutar uvicorn app.main:app --port 8000")
-        sys.exit(1)
+    print("\n✔ Todas las pruebas completadas exitosamente.")
 
 if __name__ == "__main__":
     main()

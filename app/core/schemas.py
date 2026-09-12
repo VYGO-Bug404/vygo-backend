@@ -32,7 +32,7 @@ class Punto(BaseModel):
             )
         return v
 
-Politica = Literal["agente_ppo", "agente_bc", "B2_umbral", "B1_simple"]
+Politica = Literal["agente_ppo", "agente_bc", "B2_umbral", "B1_simple", "PPO", "HIBRIDO", "B1", "B2"]
 Decision = Literal["aceptar", "rechazar"]
 TipoParada = Literal["recoleccion", "entrega"]
 EstadoParada = Literal["pendiente", "en_curso", "completada"]
@@ -56,6 +56,25 @@ TipoEvento = Literal["surge", "cierre_vial"]
 Vehiculo = Literal["moto", "bici", "auto"]
 AppNombre = Literal["uber", "didi", "rappi"]
 
+class PedidoContexto(BaseModel):
+    """Convenio estricto de JSONB pedidos.contexto según Contrato v2.0 (§4)."""
+    tiempo_preparacion_min: int = 12
+    tipo_producto: Literal["caliente", "frio", "no_perecedero"] = "caliente"
+    theta_frescura_min: Optional[float] = 25.0
+    limite_entrega_en: Optional[str] = None
+    zona: Optional[str] = "centro"
+    propina_esperada_mxn: Optional[float] = 0.0
+    comercio_nombre: Optional[str] = None
+
+    @field_validator('theta_frescura_min')
+    @classmethod
+    def validar_theta_coherencia(cls, v: Optional[float], info) -> Optional[float]:
+        # Para no_perecedero, el contrato especifica omitir theta_frescura_min
+        tipo = info.data.get("tipo_producto") if hasattr(info, "data") else None
+        if tipo == "no_perecedero":
+            return None
+        return v
+
 class RepartidorEstado(BaseModel):
     id: str
     posicion: Punto
@@ -78,6 +97,19 @@ class PedidoActivo(BaseModel):
     limite_en: Optional[str] = None
     theta_frescura_min: Optional[float] = 30.0
     recogido: bool = False
+    contexto: Optional[Union[PedidoContexto, Dict[str, Any]]] = None
+    origen_direccion: Optional[str] = None
+    destino_direccion: Optional[str] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.contexto:
+            ctx = self.contexto if isinstance(self.contexto, dict) else self.contexto.model_dump()
+            if ctx.get("tipo_producto") == "no_perecedero":
+                self.theta_frescura_min = None
+            elif ctx.get("theta_frescura_min") is not None and self.theta_frescura_min == 30.0:
+                self.theta_frescura_min = float(ctx["theta_frescura_min"])
+            if not self.limite_en and ctx.get("limite_entrega_en"):
+                self.limite_en = str(ctx["limite_entrega_en"])
 
 class OfertaEntrante(BaseModel):
     oferta_id: str
@@ -92,6 +124,16 @@ class OfertaEntrante(BaseModel):
     anillo: Optional[int] = 1
     radio_metros: Optional[float] = None
     desvio_estimado_metros: Optional[float] = None
+    contexto: Optional[Union[PedidoContexto, Dict[str, Any]]] = None
+    origen_direccion: Optional[str] = None
+    destino_direccion: Optional[str] = None
+    clima: Optional[str] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.contexto:
+            ctx = self.contexto if isinstance(self.contexto, dict) else self.contexto.model_dump()
+            if not self.limite_en and ctx.get("limite_entrega_en"):
+                self.limite_en = str(ctx["limite_entrega_en"])
 
 class Contexto(BaseModel):
     clima: Optional[str] = "normal"
@@ -106,6 +148,7 @@ class PeticionDecidir(BaseModel):
     contexto: Optional[Contexto] = None
 
 class Economia(BaseModel):
+    # Contrato v1.0
     tarifa_mxn: float
     delta_tiempo_min: float
     delta_distancia_km: float
@@ -116,12 +159,44 @@ class Economia(BaseModel):
     ajuste_aprendido_mxn_h: float
     umbral_superado: bool
 
+    # Contrato v2.0 (src/lib/vygoAgent.ts & §5)
+    tarifa: Optional[float] = None
+    propina_esperada: Optional[float] = 0.0
+    costo_km: Optional[float] = None
+    costo_tiempo: Optional[float] = None
+    ganancia_neta: Optional[float] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.tarifa is None:
+            self.tarifa = round(self.tarifa_mxn, 2)
+        if self.ganancia_neta is None:
+            self.ganancia_neta = round(self.ganancia_neta_mxn, 2)
+        if self.costo_km is None:
+            self.costo_km = round(self.delta_distancia_km * 2.50, 2)
+        if self.costo_tiempo is None:
+            self.costo_tiempo = round(self.delta_tiempo_min * 0.50, 2)
+
 class Riesgo(BaseModel):
+    # Contrato v1.0
     holgura_frescura_min: float
     holgura_limite_min: float
     prob_entrega_a_tiempo: float
     p_gana: float
     anillo: int = 1
+
+    # Contrato v2.0 (src/lib/vygoAgent.ts & §5)
+    prob_retraso: Optional[float] = None
+    frescura_restante: Optional[float] = None
+    holgura: Optional[float] = None
+    desvio_km: Optional[float] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.prob_retraso is None:
+            self.prob_retraso = round(max(0.0, min(1.0, 1.0 - self.prob_entrega_a_tiempo)), 2)
+        if self.frescura_restante is None:
+            self.frescura_restante = round(self.holgura_frescura_min, 1)
+        if self.holgura is None:
+            self.holgura = round(self.holgura_limite_min, 1)
 
 class DecisionOferta(BaseModel):
     oferta_id: str
@@ -136,6 +211,23 @@ class DecisionOferta(BaseModel):
     motivo_infactible: Optional[MotivoInfactible] = None
     explicacion_corta: str
     explicacion: str
+
+    # Contrato v2.0 direct top-level fields (src/lib/vygoAgent.ts & §5)
+    aceptar: Optional[bool] = None
+    tasa_marginal: Optional[float] = None
+    rho_actual: Optional[float] = None
+    ajuste_aprendido: Optional[float] = None
+    politica: Optional[Literal["B1", "B2", "PPO", "HIBRIDO", "agente_ppo", "B2_umbral", "B1_simple", "agente_bc"]] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.aceptar is None:
+            self.aceptar = (self.decision == "aceptar")
+        if self.tasa_marginal is None:
+            self.tasa_marginal = round(self.economia.tasa_marginal_mxn_h, 1)
+        if self.rho_actual is None:
+            self.rho_actual = round(self.economia.rho_actual_mxn_h, 1)
+        if self.ajuste_aprendido is None:
+            self.ajuste_aprendido = round(self.economia.ajuste_aprendido_mxn_h, 1)
 
 class Parada(BaseModel):
     orden: int
@@ -170,6 +262,26 @@ class Plan(BaseModel):
     paradas: List[Parada]
     geometria: Geometria
     resumen: ResumenPlan
+
+    # Contrato v2.0 fields (src/lib/vygoAgent.ts & §5)
+    secuencia: Optional[List[str]] = Field(default_factory=list)
+    tiempo_total_min: Optional[float] = None
+    distancia_total_km: Optional[float] = None
+    eta_ultimo: Optional[str] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.secuencia and self.paradas:
+            sec = []
+            for p in self.paradas:
+                if p.pedido_id not in sec:
+                    sec.append(p.pedido_id)
+            self.secuencia = sec
+        if self.tiempo_total_min is None:
+            self.tiempo_total_min = self.resumen.duracion_min
+        if self.distancia_total_km is None:
+            self.distancia_total_km = self.resumen.distancia_km
+        if self.eta_ultimo is None and self.paradas:
+            self.eta_ultimo = self.paradas[-1].eta
 
 class Telemetria(BaseModel):
     rho_actual_mxn_h: float

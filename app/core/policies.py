@@ -70,6 +70,28 @@ def evaluar_ajuste_aprendido_ppo(
 
     return round(ajuste, 1)
 
+def normalizar_politica(pol: Optional[str]) -> Tuple[str, str]:
+    """
+    Retorna (politica_interna, politica_salida_v2).
+    Reconcilia 'PPO', 'HIBRIDO', 'B1', 'B2' con 'agente_ppo', 'B2_umbral', 'B1_simple'.
+    """
+    if not pol:
+        return "agente_ppo", "PPO"
+    p = str(pol).strip()
+    p_upper = p.upper()
+    if p_upper in ("PPO", "AGENTE_PPO"):
+        pol_out = "PPO" if p_upper == "PPO" else "agente_ppo"
+        return "agente_ppo", pol_out
+    elif p_upper in ("HIBRIDO", "B2_UMBRAL", "B2"):
+        pol_out = "HIBRIDO" if p_upper in ("HIBRIDO", "B2") else "B2_umbral"
+        return "B2_umbral", pol_out
+    elif p_upper in ("B1", "B1_SIMPLE"):
+        pol_out = "B1" if p_upper == "B1" else "B1_simple"
+        return "B1_simple", pol_out
+    elif p_upper in ("AGENTE_BC", "BC"):
+        return "agente_bc", "agente_bc"
+    return p, p
+
 def evaluar_oferta(
     repartidor: RepartidorEstado,
     plan_activo: List[PedidoActivo],
@@ -80,7 +102,9 @@ def evaluar_oferta(
 ) -> Tuple[DecisionOferta, Optional[List]]:
     """
     Evalúa una oferta entrante respecto al estado actual y devuelve la decisión con métricas.
+    Totalmente compatible con Contrato v1.0 y Contrato v2.0 (§5).
     """
+    pol_interna, pol_v2 = normalizar_politica(politica)
     clima = contexto.clima if contexto and contexto.clima else "normal"
     capacidad = repartidor.capacidad
 
@@ -91,7 +115,7 @@ def evaluar_oferta(
     )
 
     # Caso incorporando la oferta
-    if politica == "B1_simple" and len(plan_activo) >= 1:
+    if pol_interna == "B1_simple" and len(plan_activo) >= 1:
         sec_comb = None
         motivo_inf = "capacidad"
     else:
@@ -102,12 +126,20 @@ def evaluar_oferta(
 
     rho_actual = repartidor.rho_actual_mxn_h
 
+    # Extraer propina estimada de contexto si existe
+    propina_esperada = 0.0
+    if oferta.contexto:
+        ctx_dict = oferta.contexto if isinstance(oferta.contexto, dict) else oferta.contexto.model_dump()
+        propina_esperada = float(ctx_dict.get("propina_esperada_mxn") or 0.0)
+
     # Si no es factible
     if sec_comb is None:
         d_directa = distancia_vial_km(repartidor.posicion, oferta.origen) + distancia_vial_km(oferta.origen, oferta.destino)
         t_directo = tiempo_viaje_min(d_directa, clima)
         c_marg = calcular_costo_marginal(d_directa, t_directo)
-        g_neta = oferta.precio_mxn - c_marg
+        costo_km = round(d_directa * 2.50, 2)
+        costo_tiempo = round(t_directo * 0.50, 2)
+        g_neta = oferta.precio_mxn + propina_esperada - c_marg
         t_marg = calcular_tasa_marginal(g_neta, t_directo)
 
         economia = Economia(
@@ -120,6 +152,11 @@ def evaluar_oferta(
             rho_actual_mxn_h=round(rho_actual, 1),
             ajuste_aprendido_mxn_h=0.0,
             umbral_superado=False,
+            tarifa=round(oferta.precio_mxn, 2),
+            propina_esperada=round(propina_esperada, 2),
+            costo_km=costo_km,
+            costo_tiempo=costo_tiempo,
+            ganancia_neta=round(g_neta, 2),
         )
         riesgo = Riesgo(
             holgura_frescura_min=0.0,
@@ -127,6 +164,10 @@ def evaluar_oferta(
             prob_entrega_a_tiempo=0.10,
             p_gana=0.50,
             anillo=oferta.anillo if oferta.anillo else 1,
+            prob_retraso=0.90,
+            frescura_restante=0.0,
+            holgura=0.0,
+            desvio_km=round(d_directa, 1),
         )
         dec = DecisionOferta(
             oferta_id=oferta.oferta_id,
@@ -141,6 +182,11 @@ def evaluar_oferta(
             motivo_infactible=motivo_inf,
             explicacion_corta=f"Infactible: {motivo_inf}",
             explicacion=f"Rechaza: la oferta excede la restricción operativa de {motivo_inf}.",
+            aceptar=False,
+            tasa_marginal=round(t_marg, 1),
+            rho_actual=round(rho_actual, 1),
+            ajuste_aprendido=0.0,
+            politica=pol_v2,  # type: ignore
         )
         return dec, None
 
@@ -148,7 +194,9 @@ def evaluar_oferta(
     delta_km = max(0.1, dist_comb - dist_base)
     delta_min = max(0.5, dur_comb - dur_base)
     costo_marg = calcular_costo_marginal(delta_km, delta_min)
-    ganancia_neta = oferta.precio_mxn - costo_marg
+    costo_km = round(delta_km * 2.50, 2)
+    costo_tiempo = round(delta_min * 0.50, 2)
+    ganancia_neta = oferta.precio_mxn + propina_esperada - costo_marg
     tasa_marginal = calcular_tasa_marginal(ganancia_neta, delta_min)
 
     # Extraer holguras para la entrega de la oferta
@@ -165,22 +213,26 @@ def evaluar_oferta(
 
     # Evaluación según política
     ajuste_aprendido = 0.0
-    if politica == "agente_ppo":
+    if pol_interna == "agente_ppo":
         ajuste_aprendido = evaluar_ajuste_aprendido_ppo(oferta, contexto, holgura_frescura)
         tasa_evaluada = tasa_marginal + ajuste_aprendido
         umbral_superado = tasa_evaluada >= rho_actual
         if len(plan_activo) == 0 and tasa_evaluada >= 115.0:
             umbral_superado = True
-    elif politica == "B2_umbral":
+    elif pol_interna == "B2_umbral":
+        # HÍBRIDO: regla analítica pura, ajuste_aprendido es estrictamente 0.0 (Contrato v2.0 §1 & §5.1)
+        ajuste_aprendido = 0.0
         tasa_evaluada = tasa_marginal
         umbral_superado = tasa_marginal >= rho_actual
         if len(plan_activo) == 0 and tasa_marginal >= 120.0:
             umbral_superado = True
-    elif politica == "B1_simple":
+    elif pol_interna == "B1_simple":
         # B1 acepta todo lo factible dentro de su capacidad (sin umbral)
+        ajuste_aprendido = 0.0
         tasa_evaluada = tasa_marginal
         umbral_superado = True
     else:  # Fallback
+        ajuste_aprendido = 0.0
         tasa_evaluada = tasa_marginal
         umbral_superado = tasa_marginal >= rho_actual
 
@@ -196,6 +248,11 @@ def evaluar_oferta(
         rho_actual_mxn_h=round(rho_actual, 1),
         ajuste_aprendido_mxn_h=round(ajuste_aprendido, 1),
         umbral_superado=umbral_superado,
+        tarifa=round(oferta.precio_mxn, 2),
+        propina_esperada=round(propina_esperada, 2),
+        costo_km=costo_km,
+        costo_tiempo=costo_tiempo,
+        ganancia_neta=round(ganancia_neta, 2),
     )
     riesgo = Riesgo(
         holgura_frescura_min=round(holgura_frescura, 1),
@@ -203,13 +260,17 @@ def evaluar_oferta(
         prob_entrega_a_tiempo=round(prob_a_tiempo, 2),
         p_gana=0.65,
         anillo=oferta.anillo if oferta.anillo else 1,
+        prob_retraso=round(max(0.0, min(1.0, 1.0 - prob_a_tiempo)), 2),
+        frescura_restante=round(holgura_frescura, 1),
+        holgura=round(holgura_limite, 1),
+        desvio_km=round(delta_km, 1),
     )
 
     diff = tasa_marginal - rho_actual
     signo = "+" if diff >= 0 else ""
     if decision_str == "aceptar":
         explicacion_corta = f"{signo}${tasa_marginal:.0f}/h vs tu ${rho_actual:.0f}/h"
-        if politica == "agente_ppo":
+        if pol_interna == "agente_ppo":
             zona_dest = clasificar_zona(oferta.destino).upper()
             explicacion = (
                 f"Acepta: paga a ${tasa_marginal:.1f}/h contra tu promedio de ${rho_actual:.1f}/h de hoy, "
@@ -234,13 +295,18 @@ def evaluar_oferta(
         app=oferta.app,  # type: ignore
         decision=decision_str,  # type: ignore
         prioridad=1,
-        confianza=0.88 if politica == "agente_ppo" else 0.95,
+        confianza=0.88 if pol_interna == "agente_ppo" else 0.95,
         economia=economia,
         riesgo=riesgo,
         factible=True,
         motivo_infactible=None,
         explicacion_corta=explicacion_corta,
         explicacion=explicacion,
+        aceptar=(decision_str == "aceptar"),
+        tasa_marginal=round(tasa_marginal, 1),
+        rho_actual=round(rho_actual, 1),
+        ajuste_aprendido=round(ajuste_aprendido, 1),
+        politica=pol_v2,  # type: ignore
     )
 
     return dec, sec_comb

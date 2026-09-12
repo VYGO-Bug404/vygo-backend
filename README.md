@@ -228,6 +228,46 @@ Flujo Server-Sent Events (SSE) para simular un turno acelerado en el frontend.
 ### 4. `GET /replay/{id}.json`
 Descarga directa del dataset estático pareado de 3 pistas para reproducción sin red durante el pitch.
 
+### 5. `POST /simular/evaluar_db` (Contrato v2.0 - Superficie D)
+Simulación end-to-end completa contra la base de datos Supabase:
+- Ejecuta las 4 consultas SQL oficiales (§4.1) para extraer posición, plan a bordo, ofertas pendientes y horas/ingresos del turno.
+- Evalúa la política solicitada (`PPO` o `HIBRIDO`).
+- Opcionalmente persiste las decisiones (§5.3): actualiza `ofertas_pedido`, `pedidos`, marca ofertas rivales como `perdida` y reescribe la secuencia de `viaje_pedidos`.
+- Retorna el objeto `RespuestaDecidir` de v2.0 con `aceptar: bool`, `tasa_marginal`, `rho_actual`, `ajuste_aprendido`, `politica`, y validación de contrato.
+
+### 6. `POST /simular/inyeccion` y `GET /simular/verificar` (Contrato v2.0 - Superficie D)
+- `POST /simular/inyeccion`: Ejecuta el Plan de Inyección de 11 tablas y 40 pedidos (§6) y verifica las 7 reglas oficiales (§7).
+- `GET /simular/verificar`: Ejecuta en tiempo real las 7 consultas de verificación del Contrato v2.0.
+
+---
+
+## 💾 Inyección y Semilla de Datos Supabase (`scripts/seed_supabase.py`)
+
+El script oficial de inyección puebla las 11 tablas en estricto orden de integridad referencial:
+1. `apps` (3)
+2. `usuarios` (31: 1 repartidor demo + 30 clientes)
+3. `repartidores` (1 moto demo)
+4. `platform_connections` (3 plataformas activas)
+5. `configuracion` (10 claves oficiales de sistema §3.5)
+6. `ubicaciones_conductores` (1 posición GPS en Monterrey ZM)
+7. `viajes_repartidor` (1 viaje activo iniciado hace 90 min)
+8. `pedidos` (40 pedidos con contexto JSONB en 4 clústeres de Monterrey: 12 entregados, 3 asignados, 25 buscando)
+9. `viaje_pedidos` (15 paradas con orden consecutivo 1..15)
+10. `difusiones_pedido` (25 difusiones de búsqueda)
+11. `ofertas_pedido` (8 ofertas pendientes con `expira_en > now`)
+
+Uso del script:
+```bash
+# Inyección en memoria y ejecución de las 7 verificaciones oficiales
+python scripts/seed_supabase.py
+
+# Exportar script SQL para ejecutar directamente en Supabase SQL Editor
+python scripts/seed_supabase.py --export sql
+
+# Ver el script SQL generado en consola
+python scripts/seed_supabase.py --sql
+```
+
 ---
 
 ## 🧪 Pruebas Automatizadas
@@ -237,7 +277,9 @@ Para ejecutar la suite completa de pruebas:
 pytest -v
 ```
 
-Las pruebas cubren:
+Las 45 pruebas automatizadas cubren:
+- **`tests/test_v2_contrato.py`**: Validación estricta de Contrato v2.0 (`PPO`, `HIBRIDO`, `aceptar: bool`, `ajuste_aprendido == 0.0`, `pedidos.contexto` JSONB, no perecederos sin vencimiento de frescura).
+- **`tests/test_db_simulacion.py`**: Consultas SQL (§4.1), mutaciones de persistencia (§5.3), plan de inyección de 40 pedidos (§6), las 7 verificaciones oficiales (§7), y endpoints de simulación de base de datos.
 - **`tests/test_schemas.py`**: Validación de contratos JSON, bounding box geográfico de Monterrey [$25.4, 25.9$] y [$-100.6, -100.1$], y orden GeoJSON `[lon, lat]`.
 - **`tests/test_router.py`**: Restricciones de precedencia, capacidad de mochila, holguras de frescura y benchmark de evaluación de 90 secuencias en $< 15$ ms.
 - **`tests/test_decidir.py`**: Integración de endpoints `/salud`, `/decidir`, streaming `/turno/stream`, y `/replay/{id}.json`.
@@ -265,4 +307,4 @@ El frontend en React desplegado en Vercel (`https://vygo-ten.vercel.app`) se con
 ```env
 VITE_AGENT_URL=http://localhost:8000
 ```
-La degradación en cascada del frontend asegura que si el servidor no está disponible, cae automáticamente al archivo `replay_12.json` servido de forma local o estática.
+La degradación en cascada del frontend asegura que si el servidor no está disponible, cae automáticamente al cálculo B2 del cliente o al archivo `replay_12.json` estático.

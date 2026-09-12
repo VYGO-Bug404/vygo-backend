@@ -121,3 +121,157 @@ async def obtener_replay(id: int):
             status_code=500,
             detail=f"Error al leer el archivo de replay: {str(ex)}"
         )
+
+# =============================================================================
+# SUPERFICIE D: SIMULACIÓN Y PRUEBAS CONTRA BASE DE DATOS SUPABASE (CONTRATO V2.0)
+# =============================================================================
+
+from app.core.db import (
+    obtener_db,
+    construir_peticion_desde_db,
+)
+
+@router.post("/simular/inyeccion")
+async def simular_inyeccion():
+    """
+    Ejecuta el Plan de Inyección de Datos Oficial (§6) y valida las 7 reglas (§7).
+    """
+    db = obtener_db()
+    db.inicializar_datos_semilla()
+    verificaciones = db.verificar_estado_inyeccion()
+    return {
+        "ok": verificaciones["todas_pasan"],
+        "mensaje": "Base de datos inicializada según Contrato v2.0 (§6)",
+        "tablas": {
+            "apps": len(db.apps),
+            "usuarios": len(db.usuarios),
+            "repartidores": len(db.repartidores),
+            "platform_connections": len(db.platform_connections),
+            "configuracion": len(db.configuracion),
+            "viajes_repartidor": len(db.viajes_repartidor),
+            "pedidos": len(db.pedidos),
+            "viaje_pedidos": len(db.viaje_pedidos),
+            "difusiones_pedido": len(db.difusiones_pedido),
+            "ofertas_pedido": len(db.ofertas_pedido),
+        },
+        "verificaciones": verificaciones,
+    }
+
+@router.get("/simular/verificar")
+async def simular_verificar():
+    """
+    Ejecuta y retorna las 7 verificaciones previas a conectar el agente (§7).
+    """
+    db = obtener_db()
+    return db.verificar_estado_inyeccion()
+
+@router.post("/simular/evaluar_db")
+async def simular_evaluar_db(
+    response: Response,
+    repartidor_id: str = Query(default="rep-demo-01", description="ID del repartidor a consultar"),
+    politica: Optional[Politica] = Query(default="PPO", description="Política a evaluar: PPO o HIBRIDO"),
+    persistir: bool = Query(default=True, description="Persistir decisiones en la base de datos (§5.3)"),
+    reset_db: bool = Query(default=False, description="Reiniciar datos semilla antes de simular"),
+):
+    """
+    Simulación end-to-end completa desde la base de datos Supabase:
+      1. Extrae el estado ejecutando las 4 consultas SQL oficiales (§4.1).
+      2. Evalúa las ofertas entrantes con la política seleccionada (PPO o HIBRIDO).
+      3. Si persistir=True, ejecuta las mutaciones de escritura de vuelta (§5.3).
+      4. Retorna el objeto RespuestaDecidir y el estado auditable resultante.
+    """
+    inicio_ts = time.perf_counter()
+    t0 = datetime.now(timezone.utc)
+    db = obtener_db()
+
+    if reset_db:
+        db.inicializar_datos_semilla()
+
+    # 1. Ejecutar las 4 consultas SQL (§4.1) y construir PeticionDecidir
+    try:
+        peticion = construir_peticion_desde_db(
+            repartidor_id=repartidor_id,
+            db=db,
+            politica=str(politica or "PPO"),
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=404, detail=str(ex))
+
+    # 2. Ejecutar evaluador de políticas con optimización exacta Held-Karp
+    pol_solicitada = politica or "PPO"
+    pol_efectiva, decisiones, plan_res, telemetria, alertas = procesar_decisiones(
+        repartidor=peticion.repartidor,
+        plan_activo=peticion.plan_activo,
+        ofertas=peticion.ofertas,
+        contexto=peticion.contexto,
+        politica_solicitada=pol_solicitada,
+        t0=t0,
+    )
+
+    latencia_ms = round((time.perf_counter() - inicio_ts) * 1000.0, 2)
+    response.headers["X-Response-Time-Ms"] = str(latencia_ms)
+
+    # Validar las 7 reglas oficiales (§7) sobre el estado consultado
+    verificaciones_previas = db.verificar_estado_inyeccion()
+
+    # 3. Escritura de vuelta a la base (§5.3)
+    mutaciones = {}
+    if persistir:
+        viaje_id = peticion.plan_activo[0].pedido_id if peticion.plan_activo else "viaje-demo-01"
+        rep_st = db.obtener_estado_repartidor(repartidor_id)
+        if rep_st and rep_st.get("viaje_id"):
+            viaje_id = rep_st["viaje_id"]
+
+        ofertas_aceptadas = [d for d in decisiones if d.decision == "aceptar"]
+        ofertas_rechazadas = [d for d in decisiones if d.decision == "rechazar"]
+
+        # Persistir rechazos
+        for r_dec in ofertas_rechazadas:
+            db.persistir_decision_rechazar(r_dec.oferta_id)
+
+        # Persistir aceptación de la mejor oferta si hubo
+        if ofertas_aceptadas:
+            # Seleccionar la mejor oferta aceptada
+            mejor = max(ofertas_aceptadas, key=lambda x: x.economia.tasa_marginal_mxn_h)
+            # Extraer nueva secuencia ordenada de pedidos únicos
+            nuevo_orden: List[Tuple[str, int]] = []
+            for idx, parada in enumerate(plan_res.paradas):
+                if not any(item[0] == parada.pedido_id for item in nuevo_orden):
+                    nuevo_orden.append((parada.pedido_id, len(nuevo_orden) + 1))
+
+            coords = plan_res.geometria.coordinates
+            mutaciones = db.persistir_decision_aceptar(
+                oferta_id=mejor.oferta_id,
+                pedido_id=mejor.pedido_id,
+                viaje_id=viaje_id,
+                nuevo_orden_secuencia=nuevo_orden,
+                coordenadas_ruta=coords,
+            )
+
+    verificaciones = verificaciones_previas
+    verif_post = db.verificar_estado_inyeccion()
+    mutaciones["orden_consecutivo_post_mutacion"] = verif_post["v4_orden_consecutivo"]
+
+    respuesta_decidir = RespuestaDecidir(
+        version="2.0",
+        generado_en=t0.isoformat(),
+        politica=pol_efectiva,
+        latencia_ms=latencia_ms,
+        decisiones=decisiones,
+        plan=plan_res,
+        telemetria=telemetria,
+        alertas=alertas,
+        evento_activo=None,
+    )
+
+    return {
+        "ok": True,
+        "politica": pol_efectiva,
+        "repartidor_id": repartidor_id,
+        "latencia_ms": latencia_ms,
+        "pedidos_a_bordo_iniciales": len(peticion.plan_activo),
+        "ofertas_evaluadas": len(peticion.ofertas),
+        "mutaciones_escritura_bd": mutaciones,
+        "verificaciones_contrato": verificaciones,
+        "respuesta_decidir": respuesta_decidir,
+    }

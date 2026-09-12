@@ -71,9 +71,25 @@ def generar_items_paradas(
 
     # Procesar pedidos activos
     for p in pedidos_activos:
+        ctx = (p.contexto if isinstance(p.contexto, dict) else p.contexto.model_dump()) if p.contexto else {}
+        
         listo_m = parse_iso_minutes(p.listo_en, t0)
-        limite_m = parse_iso_minutes(p.limite_en, t0) if p.limite_en else 90.0
-        frescura = p.theta_frescura_min if p.theta_frescura_min is not None else 30.0
+        if listo_m == 0.0 and ctx.get("tiempo_preparacion_min") is not None:
+            listo_m = float(ctx["tiempo_preparacion_min"])
+
+        limite_m = parse_iso_minutes(p.limite_en, t0) if p.limite_en else (
+            parse_iso_minutes(ctx.get("limite_entrega_en"), t0) if ctx.get("limite_entrega_en") else 90.0
+        )
+        
+        if ctx.get("tipo_producto") == "no_perecedero":
+            frescura = 99999.0
+        elif ctx.get("theta_frescura_min") is not None:
+            frescura = float(ctx["theta_frescura_min"])
+        else:
+            frescura = p.theta_frescura_min if p.theta_frescura_min is not None else 30.0
+
+        dir_rec = p.origen_direccion or (f"{ctx.get('comercio_nombre')} ({p.pedido_id[:6]})" if ctx.get("comercio_nombre") else f"Recolección {p.app.capitalize()} ({p.pedido_id[:6]})")
+        dir_ent = p.destino_direccion or f"Entrega {p.app.capitalize()} ({p.pedido_id[:6]})"
 
         if p.recogido:
             carga_inicial += 1
@@ -87,7 +103,7 @@ def generar_items_paradas(
                     limite_min=limite_m,
                     theta_frescura_min=frescura,
                     ya_recogido=True,
-                    direccion=f"Entrega {p.app.capitalize()} ({p.pedido_id[:6]})",
+                    direccion=dir_ent,
                 )
             )
         else:
@@ -101,7 +117,7 @@ def generar_items_paradas(
                     limite_min=limite_m,
                     theta_frescura_min=frescura,
                     ya_recogido=False,
-                    direccion=f"Recolección {p.app.capitalize()} ({p.pedido_id[:6]})",
+                    direccion=dir_rec,
                 )
             )
             items.append(
@@ -114,14 +130,32 @@ def generar_items_paradas(
                     limite_min=limite_m,
                     theta_frescura_min=frescura,
                     ya_recogido=False,
-                    direccion=f"Entrega {p.app.capitalize()} ({p.pedido_id[:6]})",
+                    direccion=dir_ent,
                 )
             )
 
     # Procesar oferta candidata si existe
     if oferta_candidata:
+        o_ctx = (oferta_candidata.contexto if isinstance(oferta_candidata.contexto, dict) else oferta_candidata.contexto.model_dump()) if oferta_candidata.contexto else {}
+        
         listo_cand_m = parse_iso_minutes(oferta_candidata.listo_estimado_en, t0)
-        limite_cand_m = parse_iso_minutes(oferta_candidata.limite_en, t0) if oferta_candidata.limite_en else 90.0
+        if listo_cand_m == 0.0 and o_ctx.get("tiempo_preparacion_min") is not None:
+            listo_cand_m = float(o_ctx["tiempo_preparacion_min"])
+
+        limite_cand_m = parse_iso_minutes(oferta_candidata.limite_en, t0) if oferta_candidata.limite_en else (
+            parse_iso_minutes(o_ctx.get("limite_entrega_en"), t0) if o_ctx.get("limite_entrega_en") else 90.0
+        )
+
+        if o_ctx.get("tipo_producto") == "no_perecedero":
+            theta_cand = 99999.0
+        elif o_ctx.get("theta_frescura_min") is not None:
+            theta_cand = float(o_ctx["theta_frescura_min"])
+        else:
+            theta_cand = 30.0
+
+        o_dir_rec = oferta_candidata.origen_direccion or (f"{o_ctx.get('comercio_nombre')} ({oferta_candidata.pedido_id[:6]})" if o_ctx.get("comercio_nombre") else f"Recolección {oferta_candidata.app.capitalize()} ({oferta_candidata.pedido_id[:6]})")
+        o_dir_ent = oferta_candidata.destino_direccion or f"Entrega {oferta_candidata.app.capitalize()} ({oferta_candidata.pedido_id[:6]})"
+
         items.append(
             ItemParada(
                 tipo="recoleccion",
@@ -130,9 +164,9 @@ def generar_items_paradas(
                 punto=oferta_candidata.origen,
                 listo_min=listo_cand_m,
                 limite_min=limite_cand_m,
-                theta_frescura_min=30.0,
+                theta_frescura_min=theta_cand,
                 ya_recogido=False,
-                direccion=f"Recolección {oferta_candidata.app.capitalize()} ({oferta_candidata.pedido_id[:6]})",
+                direccion=o_dir_rec,
             )
         )
         items.append(
@@ -143,9 +177,9 @@ def generar_items_paradas(
                 punto=oferta_candidata.destino,
                 listo_min=listo_cand_m,
                 limite_min=limite_cand_m,
-                theta_frescura_min=30.0,
+                theta_frescura_min=theta_cand,
                 ya_recogido=False,
-                direccion=f"Entrega {oferta_candidata.app.capitalize()} ({oferta_candidata.pedido_id[:6]})",
+                direccion=o_dir_ent,
             )
         )
 

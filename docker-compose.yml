@@ -10,6 +10,7 @@ services:
     environment:
       - PORT=8000
       - ENVIRONMENT=production
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/salud"]
       interval: 30s

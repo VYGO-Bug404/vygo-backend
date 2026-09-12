@@ -237,8 +237,6 @@ def evaluar_oferta(
         ajuste_aprendido = 0.0
         tasa_evaluada = tasa_marginal
         umbral_superado = tasa_marginal >= rho_actual
-        if len(plan_activo) == 0 and tasa_marginal >= 120.0:
-            umbral_superado = True
     elif pol_interna == "B1_simple":
         # B1 acepta todo lo factible dentro de su capacidad (sin umbral)
         ajuste_aprendido = 0.0

@@ -22,6 +22,13 @@ from app.core.metrics import (
     COSTO_POR_KM_MXN,
     COSTO_POR_MIN_MXN,
 )
+from app.ai.sequencer import (
+    held_karp as ai_held_karp,
+    verificar_y_calendarizar as ai_verificar_y_calendarizar,
+    Parada as AIParada,
+    Restricciones as AIRestricciones,
+    _permutaciones_validas_por_precedencia,
+)
 
 class ItemParada:
     def __init__(
@@ -195,7 +202,7 @@ def resolver_secuencia_optima(
 ) -> Tuple[Optional[List[Dict[str, Any]]], float, float, int, Optional[MotivoInfactible]]:
     """
     Encuentra la secuencia exacta de paradas que minimiza tiempo y costo,
-    respetando precedencia, capacidad y frescura.
+    respetando precedencia, capacidad y frescura mediante Held-Karp compilado con Numba.
     Retorna: (secuencia_optima, distancia_km, duracion_min, secuencias_evaluadas, motivo_infactible)
     """
     if t0 is None:
@@ -208,214 +215,101 @@ def resolver_secuencia_optima(
         return [], 0.0, 0.0, 1, None
 
     # Si hay recolecciones pendientes y la capacidad actual ya está al tope
-    if carga_inicial >= capacidad_max and any(it.tipo == "recoleccion" for it in items):
+    if carga_inicial >= capacidad_max and any(it.tipo in ("recoleccion", "recogida") for it in items):
         return None, 0.0, 0.0, 0, "capacidad"
 
     n = len(items)
 
-    # Identificar pares (recolección, entrega) para filtrar precedencia
-    pares_precedencia = []
-    por_pedido = {}
+    stops: List[AIParada] = []
+    r_dict = {}
+    l_dict = {}
+    theta_dict = {}
+    carga_dict = {}
+
     for idx, it in enumerate(items):
-        por_pedido.setdefault(it.pedido_id, {})[it.tipo] = idx
+        tipo = "recogida" if it.tipo in ("recoleccion", "recogida") else "entrega"
+        pos = (it.punto.lat, it.punto.lon)
+        stops.append(AIParada(id=it.pedido_id, tipo=tipo, pos=pos))
+        carga_dict[it.pedido_id] = 1
 
-    for pid, dicc in por_pedido.items():
-        if "recoleccion" in dicc and "entrega" in dicc:
-            pares_precedencia.append((dicc["recoleccion"], dicc["entrega"]))
-
-    # Precomputar matriz de distancias y tiempos para evitar recalcular trigonometría
-    # Índice 0 = posicion_actual, Índices 1..n = items[0..n-1]
-    all_pts = [posicion_actual] + [it.punto for it in items]
-    dist_matrix = [[distancia_vial_km(all_pts[i], all_pts[j]) for j in range(n + 1)] for i in range(n + 1)]
-    time_matrix = [[tiempo_viaje_min(dist_matrix[i][j], clima) for j in range(n + 1)] for i in range(n + 1)]
-
-    mejor_costo = float("inf")
-    mejor_secuencia = None
-    mejor_distancia = 0.0
-    mejor_duracion = 0.0
-    secuencias_evaluadas = 0
-    fallos = {"capacidad": 0, "frescura": 0, "fecha_limite": 0}
-
-    if n <= 6:
-        # Evaluación exacta de permutaciones (para N=6 evalúa exactamente las 90 válidas en precedencia)
-        indices = list(range(n))
-        for perm in itertools.permutations(indices):
-            # 1. Filtro rápido de precedencia
-            pos_en_perm = {idx: i for i, idx in enumerate(perm)}
-            if any(pos_en_perm[rec] > pos_en_perm[ent] for rec, ent in pares_precedencia):
-                continue
-
-            secuencias_evaluadas += 1
-
-            # 2. Filtro de capacidad acumulada
-            carga = carga_inicial
-            valido_capacidad = True
-            for idx in perm:
-                it = items[idx]
-                if it.tipo == "recoleccion":
-                    carga += 1
-                    if carga > capacidad_max:
-                        valido_capacidad = False
-                        fallos["capacidad"] += 1
-                        break
-                elif it.tipo == "entrega":
-                    carga -= 1
-
-            if not valido_capacidad:
-                continue
-
-            # 3. Simulación de tiempos y distancias
-            tiempo_actual_m = 0.0
-            distancia_total = 0.0
-            pos_ant_idx = 0
-            tiempos_recoleccion = {}
-            secuencia_info = []
-            valido_restricciones = True
-
-            for idx in perm:
-                it = items[idx]
-                d_km = dist_matrix[pos_ant_idx][idx + 1]
-                t_viaje_m = time_matrix[pos_ant_idx][idx + 1]
-                t_llegada_m = tiempo_actual_m + t_viaje_m
-                distancia_total += d_km
-
-                if it.tipo == "recoleccion":
-                    # Espera en cocina si llegamos antes de que esté listo
-                    espera_cocina_m = max(0.0, it.listo_min - t_llegada_m)
-                    t_salida_m = t_llegada_m + espera_cocina_m + TIEMPO_SERVICIO_RECOLECCION_MIN
-                    tiempos_recoleccion[it.pedido_id] = t_salida_m
-                    tiempo_actual_m = t_salida_m
-
-                    secuencia_info.append({
-                        "item": it,
-                        "eta_min": t_llegada_m,
-                        "espera_m": espera_cocina_m,
-                        "holgura_frescura_min": None,
-                    })
-                else:
-                    # Entrega
-                    t_rec = tiempos_recoleccion.get(it.pedido_id, 0.0)
-                    tiempo_en_transito_m = t_llegada_m - t_rec
-                    holgura_frescura_m = it.theta_frescura_min - tiempo_en_transito_m
-                    holgura_limite_m = it.limite_min - t_llegada_m
-
-                    if holgura_frescura_m < -2.0:
-                        valido_restricciones = False
-                        fallos["frescura"] += 1
-                        break
-
-                    if holgura_limite_m < -5.0:
-                        valido_restricciones = False
-                        fallos["fecha_limite"] += 1
-                        break
-
-                    t_salida_m = t_llegada_m + TIEMPO_SERVICIO_ENTREGA_MIN
-                    tiempo_actual_m = t_salida_m
-
-                    secuencia_info.append({
-                        "item": it,
-                        "eta_min": t_llegada_m,
-                        "espera_m": 0.0,
-                        "holgura_frescura_min": max(0.0, holgura_frescura_m),
-                    })
-
-                pos_ant_idx = idx + 1
-
-            if not valido_restricciones:
-                continue
-
-            costo = (distancia_total * COSTO_POR_KM_MXN) + (tiempo_actual_m * COSTO_POR_MIN_MXN)
-            if costo < mejor_costo:
-                mejor_costo = costo
-                mejor_secuencia = secuencia_info
-                mejor_distancia = distancia_total
-                mejor_duracion = tiempo_actual_m
-    else:
-        # Algoritmo Branch-and-Bound DFS para N > 6: poda ramas que violan capacidad,
-        # precedencia o cuya cota inferior de costo excede el mejor costo conocido.
-        prec_map = {ent: rec for rec, ent in pares_precedencia}
-        visited = [False] * n
-
-        def dfs(step, current_carga, pos_idx, cur_dist, cur_time, tiempos_rec, cur_sec):
-            nonlocal mejor_costo, mejor_secuencia, mejor_distancia, mejor_duracion, secuencias_evaluadas
-            if step == n:
-                secuencias_evaluadas += 1
-                costo = (cur_dist * COSTO_POR_KM_MXN) + (cur_time * COSTO_POR_MIN_MXN)
-                if costo < mejor_costo:
-                    mejor_costo = costo
-                    mejor_secuencia = list(cur_sec)
-                    mejor_distancia = cur_dist
-                    mejor_duracion = cur_time
-                return
-
-            for i in range(n):
-                if not visited[i]:
-                    it = items[i]
-                    if it.tipo == "recoleccion" and current_carga >= capacidad_max:
-                        continue
-                    if i in prec_map and not visited[prec_map[i]]:
-                        continue
-
-                    d_km = dist_matrix[pos_idx][i + 1]
-                    t_viaje_m = time_matrix[pos_idx][i + 1]
-                    t_llegada_m = cur_time + t_viaje_m
-                    new_dist = cur_dist + d_km
-
-                    # Poda por cota inferior de costo
-                    if (new_dist * COSTO_POR_KM_MXN) + (t_llegada_m * COSTO_POR_MIN_MXN) >= mejor_costo:
-                        continue
-
-                    if it.tipo == "recoleccion":
-                        espera_m = max(0.0, it.listo_min - t_llegada_m)
-                        t_salida_m = t_llegada_m + espera_m + TIEMPO_SERVICIO_RECOLECCION_MIN
-                        tiempos_rec[it.pedido_id] = t_salida_m
-                        step_info = {
-                            "item": it,
-                            "eta_min": t_llegada_m,
-                            "espera_m": espera_m,
-                            "holgura_frescura_min": None,
-                        }
-                        visited[i] = True
-                        cur_sec.append(step_info)
-                        dfs(step + 1, current_carga + 1, i + 1, new_dist, t_salida_m, tiempos_rec, cur_sec)
-                        cur_sec.pop()
-                        visited[i] = False
-                    else:
-                        t_rec = tiempos_rec.get(it.pedido_id, 0.0)
-                        tiempo_transito_m = t_llegada_m - t_rec
-                        holgura_frescura_m = it.theta_frescura_min - tiempo_transito_m
-                        holgura_limite_m = it.limite_min - t_llegada_m
-
-                        if holgura_frescura_m < -2.0 or holgura_limite_m < -5.0:
-                            continue
-
-                        t_salida_m = t_llegada_m + TIEMPO_SERVICIO_ENTREGA_MIN
-                        step_info = {
-                            "item": it,
-                            "eta_min": t_llegada_m,
-                            "espera_m": 0.0,
-                            "holgura_frescura_min": max(0.0, holgura_frescura_m),
-                        }
-                        visited[i] = True
-                        cur_sec.append(step_info)
-                        dfs(step + 1, current_carga - 1, i + 1, new_dist, t_salida_m, tiempos_rec, cur_sec)
-                        cur_sec.pop()
-                        visited[i] = False
-
-        dfs(0, carga_inicial, 0, 0.0, 0.0, {}, [])
-
-    motivo = None
-    if mejor_secuencia is None:
-        if fallos["frescura"] > 0:
-            motivo = "frescura"
-        elif fallos["capacidad"] > 0:
-            motivo = "capacidad"
-        elif fallos["fecha_limite"] > 0:
-            motivo = "fecha_limite"
+        if tipo == "recogida":
+            r_dict[it.pedido_id] = it.listo_min
         else:
-            motivo = "capacidad"
+            if it.limite_min is not None and it.limite_min < 9000:
+                l_dict[it.pedido_id] = it.limite_min
+            if it.theta_frescura_min is not None and it.theta_frescura_min < 9000:
+                theta_dict[it.pedido_id] = it.theta_frescura_min
 
-    return mejor_secuencia, mejor_distancia, mejor_duracion, secuencias_evaluadas, motivo
+    constraints = AIRestricciones(
+        capacidad=capacidad_max,
+        r=r_dict,
+        l=l_dict,
+        theta=theta_dict,
+        carga=carga_dict,
+    )
+
+    pos0 = (posicion_actual.lat, posicion_actual.lon)
+
+    def travel_fn(p1, p2, t):
+        pt1 = Punto(lat=p1[0], lon=p1[1])
+        pt2 = Punto(lat=p2[0], lon=p2[1])
+        d_km = distancia_vial_km(pt1, pt2)
+        t_m = tiempo_viaje_min(d_km, clima=clima)
+        return t_m, d_km
+
+    orden, tiempo_total, dist_total, optimo_exacto, evals = ai_held_karp(
+        stops, 0.0, pos0, travel_fn, constraints, k=10
+    )
+
+    if orden is None:
+        diag: list[str] = []
+        cands = _permutaciones_validas_por_precedencia(stops)
+        for perm in cands[:20]:
+            ai_verificar_y_calendarizar(
+                perm, stops, 0.0, pos0, travel_fn, constraints, _diagnostico=diag
+            )
+            if diag:
+                break
+        motivo: MotivoInfactible = diag[0] if diag else "capacidad"
+        return None, 0.0, 0.0, evals, motivo
+
+    calendario = ai_verificar_y_calendarizar(orden, stops, 0.0, pos0, travel_fn, constraints)
+    if calendario is None:
+        return None, 0.0, 0.0, evals, "frescura"
+
+    llegadas, salidas, dist_total = calendario
+
+    secuencia_info = []
+    tiempos_recoleccion = {}
+    for pos_en_orden, idx in enumerate(orden):
+        it = items[idx]
+        t_llegada = llegadas[pos_en_orden]
+        t_salida = salidas[pos_en_orden]
+        if it.tipo in ("recoleccion", "recogida"):
+            espera = max(0.0, t_salida - t_llegada)
+            tiempos_recoleccion[it.pedido_id] = t_salida
+            secuencia_info.append({
+                "item": it,
+                "eta_min": t_llegada,
+                "espera_m": espera,
+                "holgura_frescura_min": None,
+            })
+        else:
+            t_rec = tiempos_recoleccion.get(it.pedido_id, 0.0)
+            tiempo_transito = t_llegada - t_rec
+            holgura_frescura = (
+                max(0.0, it.theta_frescura_min - tiempo_transito)
+                if it.theta_frescura_min is not None and it.theta_frescura_min < 9000
+                else None
+            )
+            secuencia_info.append({
+                "item": it,
+                "eta_min": t_llegada,
+                "espera_m": 0.0,
+                "holgura_frescura_min": holgura_frescura,
+            })
+
+    return secuencia_info, dist_total, tiempo_total, evals, None
 
 def construir_plan(
     posicion_actual: Punto,

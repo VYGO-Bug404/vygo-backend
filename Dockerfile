@@ -2,19 +2,23 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Herramientas mínimas de sistema
+# Herramientas mínimas de sistema (curl para healthcheck, build-essential si es necesario)
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-# Instalar dependencias de Python
+# Instalar dependencias de Python (Numba, NumPy, FastAPI, etc. sin PyTorch)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el código fuente
+# Copiar el código fuente del backend y algoritmos de IA
 COPY . .
 
-# Variables de entorno por defecto
+# Variables de entorno por defecto y optimización de Numba
 ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+
+# Pre-calentar el JIT de Numba durante el build para evitar latencia en la primera petición
+RUN python -c "from app.ai.sequencer import _warmup_numba; _warmup_numba(); print('Numba JIT pre-warmed successfully')"
 
 EXPOSE 8000
 

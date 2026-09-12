@@ -2,7 +2,7 @@ services:
   - type: web
     name: vygo-backend
     env: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python -c "from app.ai.sequencer import _warmup_numba; _warmup_numba()"
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     plan: free
     region: oregon
@@ -12,3 +12,5 @@ services:
         value: 3.11.9
       - key: ENVIRONMENT
         value: production
+      - key: NUMBA_CACHE_DIR
+        value: /tmp/numba_cache

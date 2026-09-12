@@ -790,7 +790,7 @@ def obtener_db() -> MockSupabaseDB:
 def construir_peticion_desde_db(
     repartidor_id: str = "rep-demo-01",
     db: Optional[MockSupabaseDB] = None,
-    politica: str = "PPO",
+    politica: str = "HIBRIDO",
 ) -> PeticionDecidir:
     """
     Construye el objeto PeticionDecidir de entrada ejecutando las 4 consultas SQL de §4.1.

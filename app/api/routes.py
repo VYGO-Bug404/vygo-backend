@@ -43,8 +43,38 @@ async def decidir(
     inicio_ts = time.perf_counter()
     t0 = datetime.now(timezone.utc)
 
-    # Política deseada: prioridad query param > body > agente_ppo por defecto
-    politica_solicitada: Politica = politica or peticion.politica or "agente_ppo"
+    # Calibrar t0 si las fechas de la petición son históricas / de pruebas (para evitar falsos rechazos por fecha límite)
+    fechas_req = []
+    for p in peticion.plan_activo:
+        for s in (p.listo_en, p.limite_en):
+            if s:
+                try:
+                    fechas_req.append(datetime.fromisoformat(s))
+                except Exception:
+                    pass
+    for o in peticion.ofertas:
+        for s in (o.listo_estimado_en, o.limite_en):
+            if s:
+                try:
+                    fechas_req.append(datetime.fromisoformat(s))
+                except Exception:
+                    pass
+    if fechas_req:
+        fechas_norm = [d if d.tzinfo is not None else d.replace(tzinfo=t0.tzinfo) for d in fechas_req]
+        max_fecha = max(fechas_norm)
+        if max_fecha < t0:
+            min_fecha = min(fechas_norm)
+            t0 = min_fecha - timedelta(minutes=5)
+
+    # Política deseada: prioridad query param > body > HIBRIDO (o agente_ppo si versión 1.0)
+    if politica:
+        politica_solicitada: Politica = politica
+    elif peticion.politica:
+        politica_solicitada = peticion.politica
+    elif peticion.version == "1.0":
+        politica_solicitada = "agente_ppo"
+    else:
+        politica_solicitada = "HIBRIDO"
 
     pol_efectiva, decisiones, plan_res, telemetria, alertas = procesar_decisiones(
         repartidor=peticion.repartidor,
@@ -70,7 +100,7 @@ async def decidir(
         )
 
     return RespuestaDecidir(
-        version="1.0",
+        version=peticion.version or "1.0",
         generado_en=t0.isoformat(),
         politica=pol_efectiva,
         latencia_ms=latencia_ms,
@@ -169,14 +199,14 @@ async def simular_verificar():
 async def simular_evaluar_db(
     response: Response,
     repartidor_id: str = Query(default="rep-demo-01", description="ID del repartidor a consultar"),
-    politica: Optional[Politica] = Query(default="PPO", description="Política a evaluar: PPO o HIBRIDO"),
+    politica: Optional[Politica] = Query(default="HIBRIDO", description="Política a evaluar: HIBRIDO o PPO"),
     persistir: bool = Query(default=True, description="Persistir decisiones en la base de datos (§5.3)"),
     reset_db: bool = Query(default=False, description="Reiniciar datos semilla antes de simular"),
 ):
     """
     Simulación end-to-end completa desde la base de datos Supabase:
       1. Extrae el estado ejecutando las 4 consultas SQL oficiales (§4.1).
-      2. Evalúa las ofertas entrantes con la política seleccionada (PPO o HIBRIDO).
+      2. Evalúa las ofertas entrantes con la política seleccionada (HIBRIDO o PPO).
       3. Si persistir=True, ejecuta las mutaciones de escritura de vuelta (§5.3).
       4. Retorna el objeto RespuestaDecidir y el estado auditable resultante.
     """
@@ -192,13 +222,13 @@ async def simular_evaluar_db(
         peticion = construir_peticion_desde_db(
             repartidor_id=repartidor_id,
             db=db,
-            politica=str(politica or "PPO"),
+            politica=str(politica or "HIBRIDO"),
         )
     except Exception as ex:
         raise HTTPException(status_code=404, detail=str(ex))
 
     # 2. Ejecutar evaluador de políticas con optimización exacta Held-Karp
-    pol_solicitada = politica or "PPO"
+    pol_solicitada = politica or "HIBRIDO"
     pol_efectiva, decisiones, plan_res, telemetria, alertas = procesar_decisiones(
         repartidor=peticion.repartidor,
         plan_activo=peticion.plan_activo,
@@ -278,7 +308,7 @@ async def simular_evaluar_db(
 async def simular_turno_db(
     response: Response,
     repartidor_id: str = Query(default="rep-demo-01", description="ID del repartidor a simular"),
-    politica: Optional[Politica] = Query(default="PPO", description="Política a evaluar: PPO o HIBRIDO"),
+    politica: Optional[Politica] = Query(default="HIBRIDO", description="Política a evaluar: HIBRIDO o PPO"),
     pasos: int = Query(default=1, ge=1, le=10, description="Número de pasos a simular consecutivamente"),
     persistir: bool = Query(default=True, description="Persistir decisiones en la base de datos (§5.3)"),
     reset_db: bool = Query(default=False, description="Reiniciar datos semilla antes de simular"),

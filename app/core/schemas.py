@@ -183,6 +183,7 @@ class Riesgo(BaseModel):
     prob_entrega_a_tiempo: float
     p_gana: float
     anillo: int = 1
+    holgura_espera_min: Optional[float] = None
 
     # Contrato v2.0 (src/lib/vygoAgent.ts & §5)
     prob_retraso: Optional[float] = None
@@ -194,9 +195,16 @@ class Riesgo(BaseModel):
         if self.prob_retraso is None:
             self.prob_retraso = round(max(0.0, min(1.0, 1.0 - self.prob_entrega_a_tiempo)), 2)
         if self.frescura_restante is None:
-            self.frescura_restante = round(self.holgura_frescura_min, 1)
+            if self.holgura_frescura_min is not None and self.holgura_frescura_min < 9000.0:
+                self.frescura_restante = round(self.holgura_frescura_min, 1)
+            else:
+                self.frescura_restante = None
         if self.holgura is None:
-            self.holgura = round(self.holgura_limite_min, 1)
+            # Según §5 y §5.1: holgura = σ_i (minutos esperando en cocina = max(0, r_i - llegada))
+            if self.holgura_espera_min is not None:
+                self.holgura = round(self.holgura_espera_min, 1)
+            else:
+                self.holgura = round(self.holgura_limite_min, 1)
 
 class DecisionOferta(BaseModel):
     oferta_id: str

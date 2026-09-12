@@ -1,0 +1,1152 @@
+V Y G O · C O N T R AT O D E D AT O S D E L A G E N T E · V 2 . 0
+
+Entradas y salidas del agente
+Qué datos necesita leer el agente de la base, qué hay que inyectar para que funcione, y qué devuelve
+exactamente para que el frontend lo pinte. Un solo contrato para las dos políticas: PPO (red neuronal) e
+HÍBRIDO (regla analítica).
+12 de septiembre de 2026 · Reconciliado contra Base de Datos Vygo (11 tablas, Supabase ihmadvmoenkxanoxrwcy ) y Arquitectura Frontend
+(React 18 + MapLibre + Zustand) · Este documento reemplaza al contrato v1.0
+
+1. El principio: una entrada, una salida, dos políticas
+El agente tiene cuatro componentes. Sólo uno cambia entre PPO e HÍBRIDO:
+1. Estado
+2. Factibilidad
+
+← lee de la BD
+[idéntico]
+← filtro exacto (frescura, capacidad, precedencia) [idéntico]
+
+3. POLÍTICA
+4. Secuenciador
+
+← aceptar / rechazar
+← AQUÍ Y SÓLO AQUÍ CAMBIA
+← enumeración exacta del orden de paradas
+[idéntico]
+
+Consecuencia práctica para la inyección de datos y para el frontend: no hay que preparar nada distinto para
+cada política. Leen las mismas columnas, escriben las mismas columnas, y devuelven el mismo objeto
+RespuestaDecidir . Lo único que cambia es el valor del campo politica y cómo se calcula ajuste_aprendido .
+
+Aspecto
+
+PPO
+
+HÍBRIDO
+
+Origen de la decisión
+
+Red con atención, pesos entrenados
+
+Regla de umbral derivada de la ecuación de
+Bellman
+
+politica
+
+'PPO'
+
+'HIBRIDO'
+
+tasa_marginal
+
+Idéntico — lo calcula el evaluador de inserción exacto, no la red
+
+rho_actual
+
+Idéntico — media móvil de la tasa realizada del turno
+
+ajuste_aprendido
+
+Salida de la red: corrección por valor de posición,
+de espera y riesgo de cascada
+
+plan.secuencia
+
+Idéntico — secuenciador exacto
+
+Entrenamiento
+
+Requiere checkpoint
+
+Ninguno
+
+Latencia típica
+
+40–90 ms
+
+15–40 ms
+
+0 exacto — la regla aproxima ese término por
+cero, y es honesto decirlo
+
+2. Lo que el agente lee vs lo que el agente calcula
+Esta distinción es la que más confusión causa, así que va primero. La base de datos no contiene los números de la
+decisión. Contiene los hechos; el agente deriva los números.
+
+Dato
+
+¿De dónde sale?
+
+Nota
+
+Origen y destino del pedido
+
+BD — pedidos.origen/destino
+
+PostGIS geography(Point,4326)
+
+Tarifa
+
+BD — pedidos.precio
+
+MXN
+
+Desvío aproximado
+
+BD —
+ofertas_pedido.desvio_estimado_metros
+
+Es una estimación geométrica, útil para
+prefiltrar
+
+Δt y Δdistancia reales
+
+CALCULADO por el agente
+
+Requiere reoptimizar la secuencia; no se
+puede guardar por adelantado
+
+tasa_marginal
+
+CALCULADO por el agente
+
+(precio − costo_km·Δkm) / Δt
+
+rho_actual
+
+CALCULADO por el agente
+
+Media móvil de 90 min simulados / del
+turno
+
+Orden óptimo de paradas
+
+CALCULADO por el agente
+
+Se escribe después a
+viaje_pedidos.orden
+
+Tiempo de preparación
+
+NO EXISTE en el esquema
+
+→ va en pedidos.contexto , ver §4
+
+Tipo de producto / frescura
+
+NO EXISTE en el esquema
+
+→ va en pedidos.contexto , ver §4
+
+Fecha límite de entrega
+
+NO EXISTE en el esquema
+
+→ va en pedidos.contexto , ver §4
+
+Tres campos que el modelo necesita y el esquema no tiene. El tiempo de preparación, el tipo de producto y la fecha
+límite son los que definen la holgura y la frescura — es decir, todo el problema de agrupamiento. Sin ellos el agente no
+puede decidir nada interesante. La solución sin migrar el esquema es el jsonb pedidos.contexto , con el convenio
+exacto de la §4. Esa es la parte más importante de la inyección de datos.
+
+3. Entradas — tabla por tabla
+Leyenda de la columna «Para el agente»:
+IGNORA no la usa.
+
+OBLIG
+
+el agente no funciona sin ella ·
+
+ÚTIL
+
+mejora la decisión, hay fallback ·
+
+3.1 pedidos — la fuente principal
+Columna
+
+Para el agente
+
+Cómo se usa
+
+id
+
+OBLIG
+
+Identidad; viaja a plan.secuencia y de vuelta a la UI
+
+app_id
+
+OBLIG
+
+One-hot de plataforma (uber / rappi / didi) en el vector de observación; badge en la UI
+
+origen
+
+OBLIG
+
+Punto de recolección. Desplazamiento relativo a la posición del repartidor
+
+destino
+
+OBLIG
+
+Punto de entrega. Define la distancia base del pedido
+
+precio
+
+OBLIG
+
+Numerador de tasa_marginal . Si es NULL , el pedido se descarta
+
+estado
+
+OBLIG
+
+Sólo buscando es ofertable. asignado / en_camino alimentan el plan activo
+
+clima
+
+ÚTIL
+
+One-hot de 5 estados; multiplica tiempos de viaje. Fallback: despejado
+
+contexto
+
+OBLIG
+
+Preparación, frescura y fecha límite. Ver §4
+
+origen_direccion /
+destino_direccion
+
+ÚTIL
+
+No entra al modelo; el frontend la muestra en la tarjeta de oferta
+
+creado_en
+
+OBLIG
+
+Ancla temporal para expiración y para derivar la fecha límite
+
+aceptado_en /
+entregado_en
+
+ÚTIL
+
+Alimentan rho_actual y las métricas del turno
+
+cliente_id ,
+id_externo , moneda ,
+pedido_externo_id
+
+IGNORA
+
+No entran al modelo
+
+3.2 ofertas_pedido — la unidad de decisión
+Columna
+
+Para el agente
+
+Cómo se usa
+
+id , pedido_id ,
+repartidor_id
+
+OBLIG
+
+Identidad de la oferta que se está decidiendo
+
+viaje_id
+
+OBLIG
+
+Si no es nulo, la oferta se evalúa como inserción en ese viaje
+
+ronda + radio_metros
+
+OBLIG
+
+Derivan el anillo de prioridad (1 / 2 / 3) → estima p_gana
+
+desvio_estimado_metros
+
+ÚTIL
+
+Prefiltro barato. El Δ real lo recalcula el agente
+
+expira_en
+
+OBLIG
+
+Countdown de la UI y máscara de factibilidad. Si expiró, se enmascara
+
+estado
+
+OBLIG
+
+Sólo pendiente se decide. El agente escribe aceptada / rechazada
+
+clima
+
+ÚTIL
+
+Redundante con pedidos.clima ; se usa el de la oferta si difiere
+
+ofrecida_en ,
+respondida_en
+
+ÚTIL
+
+Latencia de respuesta humana; el agente escribe respondida_en
+
+3.3 viajes_repartidor + viaje_pedidos — el plan activo
+Columna
+
+Para el agente
+
+Cómo se usa
+
+viajes_repartidor.origen_actual
+
+OBLIG
+
+Posición del repartidor si no hay ping GPS más reciente
+
+viajes_repartidor.estado
+
+OBLIG
+
+Sólo activo admite acoplar pedidos
+
+viajes_repartidor.iniciado_en
+
+OBLIG
+
+Horas trabajadas → denominador de rho_actual
+
+viajes_repartidor.ruta_linea
+
+ÚTIL
+
+El agente la escribe; para leer usa la secuencia de viaje_pedidos
+
+viaje_pedidos.pedido_id + orden
+
+OBLIG
+
+Es el plan activo. Define qué lleva a bordo y en qué orden
+
+viaje_pedidos.agregado_en
+
+ÚTIL
+
+Arranca el reloj de frescura si ya se recogió
+
+3.4 repartidores y posición
+Columna
+
+Para el agente
+
+Cómo se usa
+
+repartidores.vehiculo
+
+OBLIG
+
+Determina capacidad Q, velocidad base y rendimiento km/l. Texto
+libre hoy: normalizar a moto / auto / bici
+
+repartidores.disponible
+
+OBLIG
+
+Si es false , no se le ofrece nada
+
+repartidores.app_id
+
+IGNORA
+
+El agente es multiplataforma por diseño; usa
+platform_connections
+
+repartidores.rating
+
+ÚTIL
+
+Sólo para la UI, no entra al modelo
+
+ubicaciones_conductores.lat/lng
+
+OBLIG
+
+Posición actual. Tiene prioridad sobre origen_actual . Se
+refresca cada 8 s desde el frontend
+
+ubicaciones_conductores.updated_at
+
+OBLIG
+
+Si tiene más de 60 s, se cae a
+viajes_repartidor.origen_actual
+
+platform_connections.platform +
+is_active
+
+OBLIG
+
+Sólo se ofrecen pedidos de las plataformas que el repartidor tiene
+conectadas
+
+3.5 configuracion — parámetros que el agente lee al arrancar
+Claves requeridas. Si falta alguna, el agente usa el valor por defecto y lo registra como advertencia.
+clave
+
+valor por defecto
+
+Para qué
+
+radio_ronda_1_metros
+
+1500
+
+Anillo de prioridad 1
+
+radio_ronda_2_metros
+
+3000
+
+Anillo 2
+
+radio_ronda_3_metros
+
+5000
+
+Anillo 3
+
+duracion_ronda_seg
+
+45
+
+Cuándo se resuelve quién gana la oferta
+
+expiracion_oferta_seg
+
+30
+
+Countdown de NewOrderSheet
+
+max_rondas
+
+3
+
+Tras esto el pedido se cancela
+
+max_pedidos_por_viaje
+
+4
+
+Tope del plan activo (KA)
+
+costo_km_mxn
+
+1.20
+
+Combustible + desgaste; resta en ganancia_neta
+
+rho_inicial_mxn_h
+
+140.00
+
+Umbral al inicio del turno, antes de tener historial
+
+duracion_turno_min
+
+360
+
+Horizonte; alimenta «minutos restantes»
+
+4. El convenio de pedidos.contexto
+
+CRÍTICO
+
+Aquí viven los tres campos que el esquema no modela y sin los cuales el agente no tiene problema que resolver. Toda
+inyección de pedidos debe incluir este jsonb.
+{
+"tiempo_preparacion_min": 12,
+"tipo_producto": "caliente",
+
+// r_i — minutos desde creado_en hasta que está listo
+// caliente | frio | no_perecedero
+
+"theta_frescura_min": 25,
+// máximo en tránsito tras recoger (sólo si caliente)
+"limite_entrega_en": "2026-09-12T14:45:00-06:00", // fecha límite prometida
+"zona": "centro",
+// para eventos de surge por zona
+"propina_esperada_mxn": 18.0,
+// opcional; si falta, se asume 0
+"comercio_nombre": "Sushi Roll"
+
+// opcional; sólo para la UI
+
+}
+
+Campo
+
+Oblig.
+
+Rango razonable
+
+Si falta
+
+tiempo_preparacion_min
+
+Sí
+
+6 – 25
+
+Se asume 12; el agente pierde la holgura y baja el
+agrupamiento
+
+tipo_producto
+
+Sí
+
+enum de 3
+
+Se asume caliente (conservador)
+
+theta_frescura_min
+
+Sí si caliente
+
+20 – 40
+
+Se asume 25
+
+limite_entrega_en
+
+Recomendado
+
+—
+
+Se deriva: creado_en + tiempo_directo·1.6
++ 20 min
+
+zona
+
+Recomendado
+
+texto libre
+
+Sin zona no se pueden aplicar eventos de surge
+localizados
+
+propina_esperada_mxn
+
+No
+
+0 – 40
+
+0. Nunca uses la propina real: es desconocida al
+decidir
+
+Consistencia obligatoria entre tipo_producto y theta_frescura_min . Si inyectas un pedido no_perecedero con
+theta de 25 minutos, el filtro de factibilidad lo tratará como comida caliente y rechazará agrupamientos válidos. Para
+paquetería, usa tipo_producto: "no_perecedero" y omite theta_frescura_min .
+
+4.1 Consulta de entrada completa
+Esto es literalmente lo que el agente ejecuta para construir su estado.
+
+-- 1) Estado del repartidor y su viaje activo
+select r.id, r.vehiculo, r.disponible,
+coalesce(uc.lat, st_y(v.origen_actual::geometry)) as lat,
+coalesce(uc.lng, st_x(v.origen_actual::geometry)) as lng,
+v.id as viaje_id, v.iniciado_en, uc.updated_at
+from repartidores r
+left join viajes_repartidor v
+on v.repartidor_id = r.id and v.estado = 'activo'
+left join ubicaciones_conductores uc on uc.user_id = r.usuario_id
+where r.id = :repartidor_id;
+-- 2) Plan activo: qué lleva a bordo y en qué orden
+select vp.orden, p.id, p.precio, p.estado,
+st_y(p.origen::geometry) as origen_lat,
+st_x(p.origen::geometry) as origen_lng,
+st_y(p.destino::geometry) as destino_lat,
+st_x(p.destino::geometry) as destino_lng,
+p.contexto, p.creado_en, p.aceptado_en, vp.agregado_en
+from viaje_pedidos vp
+join pedidos p on p.id = vp.pedido_id
+where vp.viaje_id = :viaje_id
+and p.estado in ('asignado', 'en_camino')
+order by vp.orden;
+-- 3) Ofertas pendientes que hay que decidir ahora
+select o.id, o.pedido_id, o.ronda, o.radio_metros,
+o.desvio_estimado_metros, o.expira_en, o.clima,
+p.precio, p.app_id, p.contexto,
+p.origen_direccion, p.destino_direccion,
+st_y(p.origen::geometry) as origen_lat,
+st_x(p.origen::geometry) as origen_lng,
+st_y(p.destino::geometry) as destino_lat,
+st_x(p.destino::geometry) as destino_lng,
+a.nombre as app
+from ofertas_pedido o
+join pedidos p on p.id = o.pedido_id
+join apps a on a.id = p.app_id
+where o.repartidor_id = :repartidor_id
+and o.estado = 'pendiente'
+and o.expira_en > now()
+and a.nombre in (select platform from platform_connections
+where user_id = :user_id and is_active)
+order by o.ronda asc, o.desvio_estimado_metros asc
+limit 8;
+-- 4) Ganancia y horas del turno, para rho_actual
+select coalesce(sum(p.precio), 0) as ingreso_mxn,
+count(*) as entregados,
+extract(epoch from now() - min(v.iniciado_en))/3600.0 as horas
+from viaje_pedidos vp
+join pedidos p on p.id = vp.pedido_id
+join viajes_repartidor v on v.id = vp.viaje_id
+where v.repartidor_id = :repartidor_id
+and p.estado = 'entregado'
+and v.iniciado_en >= date_trunc('day', now());
+
+Límite de 8 ofertas. No es arbitrario: el vector de observación del modelo tiene exactamente 8 ranuras de oferta. Si
+llegan más, se toman las 8 mejores por anillo y desvío. El HÍBRIDO tolera cualquier número, pero se mantiene el
+mismo límite para que las dos políticas vean lo mismo y la comparación sea legítima.
+
+5. Salidas — el contrato RespuestaDecidir
+Es el que ya define src/lib/vygoAgent.ts . Se respeta tal cual; el agente se adapta al frontend, no al revés.
+interface DecisionOferta {
+aceptar: boolean;
+explicacion_corta: string;
+tasa_marginal: number;
+rho_actual: number;
+
+// decisión principal
+// 1 línea para el repartidor
+// $/h si acepta este pedido
+// $/h actual del turno
+
+ajuste_aprendido: number;
+// bonus/malus por posición, opción, riesgo
+politica: 'B1'|'B2'|'PPO'|'HIBRIDO';
+}
+interface Economia {
+tarifa: number;
+propina_esperada: number;
+
+// pesos que paga la plataforma
+// estimado estadístico, NUNCA la real
+
+costo_km: number;
+costo_tiempo: number;
+ganancia_neta: number;
+
+// combustible + desgaste
+// minutos × costo_τ
+// tarifa + propina − costos
+
+}
+interface Riesgo {
+prob_retraso: number;
+
+// 0–1
+
+frescura_restante: number;
+holgura: number;
+desvio_km: number;
+
+// minutos antes de que se enfríe
+// σ_i: minutos esperando en la cocina
+// km extra vs ruta actual
+
+}
+interface Plan {
+secuencia: string[];
+
+// IDs de pedidos en orden óptimo
+
+tiempo_total_min: number;
+distancia_total_km: number;
+eta_ultimo: string;
+
+// ISO del último dropoff
+
+}
+
+5.1 Cómo llena cada campo cada política
+Campo
+
+PPO
+
+HÍBRIDO
+
+aceptar
+
+Acción de la red (argmax
+enmascarado)
+
+tasa_marginal > rho_actual
+
+tasa_marginal
+
+p_gana × (tarifa + propina_esperada − costo_km − costo_tiempo) / Δt_horas
+
+rho_actual
+
+Consulta 4 de §4.1: (ingreso − costos) / horas . Antes de la primera entrega,
+rho_inicial_mxn_h
+
+ajuste_aprendido
+
+Valor de la red menos
+tasa_marginal
+
+0
+
+politica
+
+'PPO'
+
+'HIBRIDO'
+
+explicacion_corta
+
+Plantilla: «+$187/h vs tu $141/h» o «Rechazado: te paga a $128/h, tu promedio hoy es $141/h»
+
+economia.*
+
+Idéntico — sale del evaluador de inserción exacto
+
+riesgo.frescura_restante
+
+theta_frescura_min − (ahora − momento de recolección)
+
+riesgo.holgura
+
+max(0, r_i − hora estimada de llegada al comercio) — el corazón del agrupamiento
+
+riesgo.prob_retraso
+
+Cabeza de valor de la red
+
+plan.*
+
+Idéntico — secuenciador exacto
+
+Fracción de secuencias factibles que llegan tarde en el
+peor caso
+
+5.2 Dónde aparece cada campo en la interfaz
+Tomado del mapeo que ya define el documento de frontend (§8.2). Se incluye aquí para que quien inyecte datos sepa qué se rompe si un
+campo llega vacío.
+Campo
+
+Dónde se ve
+
+Si llega nulo
+
+aceptar
+
+Color del encabezado (verde/rojo) + icono ·
+NewOrderSheet
+
+La tarjeta no se puede pintar
+
+explicacion_corta
+
+Texto de 1 línea bajo el encabezado
+
+Se pierde el criterio de Clarity
+
+tasa_marginal
+
+$X/h en verde grande
+
+Métrica principal vacía
+
+rho_actual
+
+tu promedio: $Y/h en gris
+
+Sin referencia, el número de arriba no dice nada
+
+ajuste_aprendido
+
+Tercera métrica ±$Z/h ajuste
+
+Mostrar 0 , nunca ocultar
+
+politica
+
+Badge B2 / PPO / HÍBRIDO
+
+Badge en blanco
+
+riesgo.prob_retraso
+
+Barra de riesgo verde→rojo
+
+Barra vacía
+
+riesgo.frescura_restante
+
+Indicador «Frescura: X min»
+
+Se oculta el indicador
+
+riesgo.holgura
+
+Indicador «Holgura: X min»
+
+Se oculta
+
+economia.ganancia_neta
+
+Importe principal en bold
+
+La tarjeta pierde el monto
+
+plan.secuencia
+
+Orden de marcadores en el mapa · MockMap
+
+El mapa no puede ordenar paradas
+
+plan.tiempo_total_min
+
+ETA en el banner de ActiveRoute
+
+Banner sin ETA
+
+5.3 Escritura de vuelta a la base
+La decisión no sólo se devuelve al frontend: se persiste. Este es el segundo tipo de salida y es el que deja rastro auditable.
+-- Al ACEPTAR una oferta
+update ofertas_pedido
+set estado = 'aceptada', respondida_en = now(), viaje_id = :viaje_id
+where id = :oferta_id;
+update pedidos
+set estado = 'asignado', aceptado_en = now()
+where id = :pedido_id;
+-- Las demás ofertas del mismo pedido pierden (anillo más externo o más lejos)
+update ofertas_pedido
+set estado = 'perdida'
+where pedido_id = :pedido_id and id <> :oferta_id and estado = 'pendiente';
+-- El plan reoptimizado se escribe COMPLETO: todos los orden cambian
+insert into viaje_pedidos (viaje_id, pedido_id, orden)
+values (:viaje_id, :pedido_id, :orden_nuevo);
+update viaje_pedidos set orden = :nuevo_orden
+where viaje_id = :viaje_id and pedido_id = :pedido_id;
+
+-- por cada parada
+
+update viajes_repartidor
+set ruta_linea = st_setsrid(st_makeline(/* puntos en orden */), 4326),
+actualizado_en = now()
+where id = :viaje_id;
+-- Al RECHAZAR
+update ofertas_pedido
+set estado = 'rechazada', respondida_en = now()
+where id = :oferta_id;
+
+El orden de viaje_pedidos se reescribe entero, no se agrega al final. Aceptar un pedido nuevo puede cambiar el
+orden de todos los demás — ése es el punto del secuenciador. Si sólo insertas la fila nueva con orden = max + 1 , el
+mapa mostrará una ruta que el agente nunca recomendó, y la ganancia real no coincidirá con la proyectada.
+
+6. Plan de inyección de datos
+Lo mínimo para que el agente y la demo funcionen contra la base real. Orden obligatorio por las llaves foráneas.
+#
+
+Tabla
+
+Filas
+
+Contenido
+
+1
+
+apps
+
+3
+
+Ya existen: uber , rappi , didi
+
+2
+
+usuarios
+
+1 + 30
+
+1 repartidor de demo + 30 clientes ficticios
+
+3
+
+repartidores
+
+1
+
+vehiculo='moto' , disponible=true
+
+4
+
+platform_connections
+
+3
+
+Las tres plataformas activas para ese usuario
+
+5
+
+configuracion
+
+10
+
+Las claves de §3.5. Verifica cuáles de las 7 actuales ya existen
+
+6
+
+ubicaciones_conductores
+
+1
+
+Posición inicial en la ZM de Monterrey
+
+7
+
+viajes_repartidor
+
+1
+
+estado='activo' , iniciado_en hace 90 min
+
+8
+
+pedidos
+
+40
+
+Todos con contexto completo (§4). 12 entregados, 3 asignados, 25
+buscando
+
+9
+
+viaje_pedidos
+
+15
+
+12 entregados + 3 a bordo, con orden coherente
+
+10
+
+difusiones_pedido
+
+25
+
+Una ronda por pedido en buscando
+
+11
+
+ofertas_pedido
+
+8
+
+Pendientes, con expira_en en el futuro y anillos variados
+
+6.1 Distribución geográfica — lo que decide si hay agrupamiento
+No muestrees los orígenes uniformemente sobre la ciudad. Si los comercios están dispersos, no hay dos
+recolecciones cerca y el agrupamiento es imposible por geometría, sin importar qué tan bueno sea el agente. Usa 4
+clústeres de ~10 comercios cada uno en un radio de 1.5 km, y muestrea los destinos dentro de 2.5 km del origen.
+Coordenadas sugeridas para la ZM de Monterrey:
+
+Zona
+
+lat
+
+lon
+
+Perfil
+
+Centro
+
+25.6714
+
+−100.3094
+
+Alta densidad, tickets bajos
+
+San Pedro / Valle
+
+25.6580
+
+−100.3560
+
+Tickets altos, distancias medias
+
+Cumbres
+
+25.7180
+
+−100.3760
+
+Residencial, distancias largas
+
+Tec / Contry
+
+25.6510
+
+−100.2890
+
+Densidad alta en horario de comida
+
+6.2 Plantilla de inserción de un pedido
+insert into pedidos (
+app_id, id_externo, cliente_id, origen, origen_direccion,
+destino, destino_direccion, estado, clima, contexto, precio, moneda, creado_en
+) values (
+2,
+-- rappi
+'RAPPI-8f31c',
+:cliente_id,
+st_setsrid(st_makepoint(-100.3094, 25.6714), 4326)::geography,
+
+-- lon, lat
+
+'Av. Constitución 1250, Centro',
+st_setsrid(st_makepoint(-100.2980, 25.6650), 4326)::geography,
+'Calle Padre Mier 830, Centro',
+'buscando',
+'despejado',
+'{"tiempo_preparacion_min":12,"tipo_producto":"caliente",
+"theta_frescura_min":25,"zona":"centro",
+"limite_entrega_en":"2026-09-12T14:45:00-06:00",
+"propina_esperada_mxn":18.0,"comercio_nombre":"Sushi Roll"}'::jsonb,
+62.00, 'MXN', now() - interval '2 minutes'
+);
+
+El orden es st_makepoint(lon, lat) — longitud primero. Monterrey está en (25.67, −100.31). Si inviertes el orden,
+los puntos caen cerca de las Maldivas y la demo se ve rota sin que nada falle en consola. Es el error más frecuente de
+este tipo de inyección.
+
+7. Verificación antes de conectar el agente
+Siete consultas. Todas deben pasar antes de apuntar el frontend al endpoint real.
+#
+
+Verificación
+
+Criterio
+
+1
+
+Ningún pedido sin contexto completo
+select count(*) from pedidos where contexto>>'tiempo_preparacion_min' is null;
+
+=0
+
+2
+
+Coordenadas dentro de la ZM de Monterrey
+select count(*) from pedidos where
+st_y(origen::geometry) not between 25.5 and
+25.9;
+
+=0
+
+3
+
+Coherencia de tipo_producto con
+theta_frescura_min
+
+Sin no-perecederos con theta
+
+4
+
+viaje_pedidos.orden consecutivo y sin huecos por viaje
+
+1..n
+
+5
+
+Ofertas pendientes con expira_en > now()
+
+≥1
+
+6
+
+Las 10 claves de configuracion existen
+
+10 filas
+
+7
+
+platform_connections activas para el repartidor de
+demo
+
+≥1
+
+7.1 Prueba de extremo a extremo
+1. Corre la consulta de entrada de §4.1 con el repartidor_id de demo. Debe devolver posición, un viaje activo, 3 pedidos
+a bordo y hasta 8 ofertas.
+2. Pásale eso al agente (PPO o HÍBRIDO) y confirma que devuelve un RespuestaDecidir con los cinco campos de
+DecisionOferta llenos.
+
+3. Verifica que plan.secuencia contiene los pedidos a bordo más el aceptado, y que su orden no es simplemente el de
+llegada.
+4. Abre NewOrderSheet en el frontend y confirma que las tres métricas y las tres barras de riesgo se pintan.
+
+5. Acepta desde la UI y comprueba en la base que ofertas_pedido.estado='aceptada' , pedidos.estado='asignado' y
+que todos los orden del viaje se reescribieron.
+Degradación en cascada, ya implementada en agent.service.ts . El frontend intenta el agente real con 2 s de
+tiempo límite, cae al umbral B2 calculado en el cliente, y si tampoco, al replay estático. El campo _source dice cuál
+respondió ( agent / b2_fallback / static ) y se muestra como badge. Eso significa que la interfaz nunca se rompe
+por el estado del modelo — y que si el PPO no queda listo, basta con que el endpoint devuelva politica:
+'HIBRIDO' para que todo lo demás siga igual.
+
+8. Pendientes conocidos del esquema
+Pendiente
+
+Impacto en el agente
+
+usuarios no está ligada a
+auth.users
+
+Hay que resolver el repartidor_id a mano en la inyección; no bloquea
+
+No hay tabla de comercios
+
+El tiempo de preparación no se puede estimar por establecimiento; va fijo en contexto
+
+repartidores.vehiculo es texto libre
+
+Normalizar a 3 valores o el agente no puede asignar capacidad ni consumo
+
+Referencia circular pedidos ↔
+pedidos_externos
+
+Ninguno — el agente no lee pedidos_externos
+
+ubicaciones_conductores.user_id
+sin FK
+
+Se puede insertar una posición de un usuario inexistente; valida en la inyección
+
+No hay tabla de propinas ni liquidaciones
+
+rho_actual mide sólo tarifas; la ganancia real será mayor
+
+VYGO · Contrato de entradas y salidas v2.0 · Reconciliado con el esquema real de Supabase y con src/lib/vygoAgent.ts . Si un nombre
+de campo cambia en cualquiera de los dos lados, se actualiza aquí primero.
+
+

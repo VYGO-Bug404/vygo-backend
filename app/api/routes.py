@@ -217,10 +217,8 @@ async def simular_evaluar_db(
     # 3. Escritura de vuelta a la base (§5.3)
     mutaciones = {}
     if persistir:
-        viaje_id = peticion.plan_activo[0].pedido_id if peticion.plan_activo else "viaje-demo-01"
         rep_st = db.obtener_estado_repartidor(repartidor_id)
-        if rep_st and rep_st.get("viaje_id"):
-            viaje_id = rep_st["viaje_id"]
+        viaje_id = (rep_st.get("viaje_id") if rep_st else None) or f"viaje-{repartidor_id}"
 
         ofertas_aceptadas = [d for d in decisiones if d.decision == "aceptar"]
         ofertas_rechazadas = [d for d in decisiones if d.decision == "rechazar"]
@@ -274,4 +272,51 @@ async def simular_evaluar_db(
         "mutaciones_escritura_bd": mutaciones,
         "verificaciones_contrato": verificaciones,
         "respuesta_decidir": respuesta_decidir,
+    }
+
+@router.post("/simular/turno_db")
+async def simular_turno_db(
+    response: Response,
+    repartidor_id: str = Query(default="rep-demo-01", description="ID del repartidor a simular"),
+    politica: Optional[Politica] = Query(default="PPO", description="Política a evaluar: PPO o HIBRIDO"),
+    pasos: int = Query(default=1, ge=1, le=10, description="Número de pasos a simular consecutivamente"),
+    persistir: bool = Query(default=True, description="Persistir decisiones en la base de datos (§5.3)"),
+    reset_db: bool = Query(default=False, description="Reiniciar datos semilla antes de simular"),
+):
+    """
+    Simulación secuencial de turno desde Supabase.
+    Permite simular 1 o múltiples decisiones en cadena.
+    """
+    db = obtener_db()
+    if reset_db:
+        db.inicializar_datos_semilla()
+
+    historial_pasos = []
+    ultimo_resultado = None
+
+    for paso in range(pasos):
+        res = await simular_evaluar_db(
+            response=response,
+            repartidor_id=repartidor_id,
+            politica=politica,
+            persistir=persistir,
+            reset_db=False,
+        )
+        ultimo_resultado = res
+        historial_pasos.append({
+            "paso": paso + 1,
+            "ofertas_evaluadas": res["ofertas_evaluadas"],
+            "pedidos_a_bordo": len(res["respuesta_decidir"].plan.secuencia or []),
+            "tasa_proyectada": res["respuesta_decidir"].plan.resumen.tasa_proyectada_mxn_h,
+        })
+        if res["ofertas_evaluadas"] == 0:
+            break
+
+    return {
+        "ok": True,
+        "repartidor_id": repartidor_id,
+        "politica": politica,
+        "pasos_simulados": len(historial_pasos),
+        "historial": historial_pasos,
+        "ultimo_resultado": ultimo_resultado,
     }

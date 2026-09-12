@@ -228,11 +228,10 @@ Flujo Server-Sent Events (SSE) para simular un turno acelerado en el frontend.
 ### 4. `GET /replay/{id}.json`
 Descarga directa del dataset estático pareado de 3 pistas para reproducción sin red durante el pitch.
 
-### 5. `POST /simular/evaluar_db` (Contrato v2.0 - Superficie D)
+### 5. `POST /simular/evaluar_db` y `POST /simular/turno_db` (Contrato v2.0 - Superficie D)
 Simulación end-to-end completa contra la base de datos Supabase:
-- Ejecuta las 4 consultas SQL oficiales (§4.1) para extraer posición, plan a bordo, ofertas pendientes y horas/ingresos del turno.
-- Evalúa la política solicitada (`PPO` o `HIBRIDO`).
-- Opcionalmente persiste las decisiones (§5.3): actualiza `ofertas_pedido`, `pedidos`, marca ofertas rivales como `perdida` y reescribe la secuencia de `viaje_pedidos`.
+- `POST /simular/evaluar_db`: Ejecuta las 4 consultas SQL oficiales (§4.1) para extraer posición, plan a bordo, ofertas pendientes y horas/ingresos del turno. Evalúa la política solicitada (`PPO` o `HIBRIDO`). Opcionalmente persiste las decisiones (§5.3): actualiza `ofertas_pedido`, `pedidos`, marca ofertas rivales como `perdida` y reescribe la secuencia de `viaje_pedidos`.
+- `POST /simular/turno_db`: Simula de 1 a múltiples decisiones consecutivas de un turno (`pasos=N`), encadenando evaluación, selección óptima y mutación en la base de datos.
 - Retorna el objeto `RespuestaDecidir` de v2.0 con `aceptar: bool`, `tasa_marginal`, `rho_actual`, `ajuste_aprendido`, `politica`, y validación de contrato.
 
 ### 6. `POST /simular/inyeccion` y `GET /simular/verificar` (Contrato v2.0 - Superficie D)

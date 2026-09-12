@@ -93,6 +93,13 @@ def ejecutar_pruebas(client, modo: str):
     print(f"  Pedidos a bordo iniciales: {sim_data['pedidos_a_bordo_iniciales']}")
     print(f"  Mutaciones realizadas: {sim_data.get('mutaciones_escritura_bd', {})}")
 
+    # 5. /simular/turno_db
+    res_turno = client.post("/simular/turno_db?repartidor_id=rep-demo-01&politica=PPO&pasos=2&persistir=true")
+    print(f"\n[POST /simular/turno_db] Status: {res_turno.status_code}")
+    turno_data = res_turno.json()
+    print(f"  Pasos simulados: {turno_data.get('pasos_simulados')}")
+    print(f"  Historial: {len(turno_data.get('historial', []))} pasos")
+
 def main():
     print(f"Intentando conectar con servidor en {API_BASE}...")
     try:

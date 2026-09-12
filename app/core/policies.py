@@ -202,14 +202,27 @@ def evaluar_oferta(
     # Extraer holguras para la entrega de la oferta
     holgura_frescura = 15.0
     holgura_limite = 20.0
+    espera_cocina = 0.0
+    tipo_prod = "caliente"
+    if oferta.contexto:
+        ctx_d = oferta.contexto if isinstance(oferta.contexto, dict) else oferta.contexto.model_dump()
+        tipo_prod = ctx_d.get("tipo_producto", "caliente")
+
+    es_no_perecedero = (tipo_prod == "no_perecedero")
+
     for s in sec_comb:
         it = s["item"]
-        if it.pedido_id == oferta.pedido_id and it.tipo == "entrega":
-            if s.get("holgura_frescura_min") is not None:
-                holgura_frescura = s["holgura_frescura_min"]
-            holgura_limite = max(0.0, it.limite_min - s["eta_min"])
+        if it.pedido_id == oferta.pedido_id:
+            if it.tipo == "recoleccion":
+                espera_cocina = s.get("espera_m", 0.0)
+            elif it.tipo == "entrega":
+                if s.get("holgura_frescura_min") is not None:
+                    holgura_frescura = s["holgura_frescura_min"]
+                holgura_limite = max(0.0, it.limite_min - s["eta_min"])
 
     prob_a_tiempo = min(0.98, max(0.50, 0.75 + (holgura_limite / 60.0) * 0.25))
+    anillo = oferta.anillo or (1 if (oferta.radio_metros or 1500) <= 1500 else (2 if (oferta.radio_metros or 1500) <= 3000 else 3))
+    p_gana = 0.85 if anillo == 1 else (0.60 if anillo == 2 else 0.35)
 
     # Evaluación según política
     ajuste_aprendido = 0.0
@@ -255,14 +268,15 @@ def evaluar_oferta(
         ganancia_neta=round(ganancia_neta, 2),
     )
     riesgo = Riesgo(
-        holgura_frescura_min=round(holgura_frescura, 1),
+        holgura_frescura_min=round(holgura_frescura, 1) if not es_no_perecedero else 99999.0,
         holgura_limite_min=round(holgura_limite, 1),
+        holgura_espera_min=round(espera_cocina, 1),
         prob_entrega_a_tiempo=round(prob_a_tiempo, 2),
-        p_gana=0.65,
-        anillo=oferta.anillo if oferta.anillo else 1,
+        p_gana=p_gana,
+        anillo=anillo,
         prob_retraso=round(max(0.0, min(1.0, 1.0 - prob_a_tiempo)), 2),
-        frescura_restante=round(holgura_frescura, 1),
-        holgura=round(holgura_limite, 1),
+        frescura_restante=round(holgura_frescura, 1) if not es_no_perecedero else None,
+        holgura=round(espera_cocina, 1),
         desvio_km=round(delta_km, 1),
     )
 
@@ -283,7 +297,8 @@ def evaluar_oferta(
                 f"Agrega {delta_km:.1f} km y {delta_min:.1f} min."
             )
     else:
-        explicacion_corta = f"${tasa_marginal:.0f}/h vs tu ${rho_actual:.0f}/h"
+        # Según plantilla oficial §5.1: «Rechazado: te paga a $128/h, tu promedio hoy es $141/h»
+        explicacion_corta = f"Rechazado: te paga a ${tasa_marginal:.0f}/h, tu promedio hoy es ${rho_actual:.0f}/h"
         explicacion = (
             f"Rechaza: la tasa (${tasa_marginal:.1f}/h) queda por debajo de tu promedio (${rho_actual:.1f}/h). "
             f"El desvío de {delta_km:.1f} km diluye tu ingreso horario."
@@ -337,18 +352,19 @@ def procesar_decisiones(
             if dec.decision == "aceptar":
                 ofertas_aceptadas.append(of)
         except Exception as ex:
-            logger.warning(f"Fallo en evaluacion con {politica_efectiva}: {ex}. Activando Circuit Breaker a B2_umbral.")
-            politica_efectiva = "B2_umbral"
+            pol_fallback: Politica = "HIBRIDO" if str(politica_efectiva).upper() in ("PPO", "HIBRIDO") else "B2_umbral"
+            logger.warning(f"Fallo en evaluacion con {politica_efectiva}: {ex}. Activando Circuit Breaker a {pol_fallback}.")
+            politica_efectiva = pol_fallback
             alertas.append(
                 Alerta(
                     nivel="aviso",
                     codigo="riesgo_retraso",
-                    mensaje="Degradación elegante activada: conmutando a política analítica B2_umbral."
+                    mensaje=f"Degradación elegante activada: conmutando a política analítica {pol_fallback}."
                 )
             )
-            # Reintentar con B2
+            # Reintentar con política analítica de respaldo
             dec, sec_comb = evaluar_oferta(
-                repartidor, plan_activo, of, contexto, "B2_umbral", t0
+                repartidor, plan_activo, of, contexto, pol_fallback, t0
             )
             decisiones.append(dec)
             if dec.decision == "aceptar":

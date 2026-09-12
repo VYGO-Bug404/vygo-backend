@@ -291,7 +291,7 @@ class MockSupabaseDB:
                 "ronda": ronda,
                 "radio_metros": radio,
                 "desvio_estimado_metros": desvio,
-                "expira_en": (now + timedelta(seconds=45 + i * 5)).isoformat(),
+                "expira_en": (now + timedelta(minutes=15 + i * 2)).isoformat(),
                 "clima": "normal",
                 "estado": "pendiente",
                 "ofrecida_en": now.isoformat(),
@@ -327,6 +327,8 @@ class MockSupabaseDB:
         left join viajes_repartidor v on v.repartidor_id = r.id and v.estado = 'activo'
         left join ubicaciones_conductores uc on uc.user_id = r.usuario_id
         where r.id = :repartidor_id;
+
+        Nota §3.4: Si uc.updated_at tiene más de 60 s, se cae a viajes_repartidor.origen_actual.
         """
         r = self.repartidores.get(repartidor_id)
         if not r:
@@ -342,21 +344,38 @@ class MockSupabaseDB:
                 viaje_activo = v
                 break
 
+        now = datetime.now(timezone.utc)
         lat = None
         lng = None
-        if uc:
-            lat = uc.get("lat")
-            lng = uc.get("lng")
-        elif viaje_activo and viaje_activo.get("origen_actual"):
+
+        # §3.4: Si uc.updated_at tiene más de 60s, se cae a origen_actual
+        if uc and uc.get("updated_at"):
+            try:
+                uc_dt = datetime.fromisoformat(uc["updated_at"])
+                if uc_dt.tzinfo is None:
+                    uc_dt = uc_dt.replace(tzinfo=timezone.utc)
+                if (now - uc_dt).total_seconds() <= 60.0:
+                    lat = uc.get("lat")
+                    lng = uc.get("lng")
+            except Exception:
+                pass
+
+        # Fallback a origen_actual del viaje activo
+        if (lat is None or lng is None) and viaje_activo and viaje_activo.get("origen_actual"):
             lat = viaje_activo["origen_actual"].get("lat")
             lng = viaje_activo["origen_actual"].get("lon")
+
+        # Fallback de salvaguarda
+        if lat is None or lng is None:
+            lat = uc.get("lat") if uc else CLUSTER_CENTRO["lat"]
+            lng = uc.get("lng") if uc else CLUSTER_CENTRO["lon"]
 
         return {
             "id": r["id"],
             "vehiculo": r.get("vehiculo", "moto"),
             "disponible": r.get("disponible", True),
-            "lat": lat or CLUSTER_CENTRO["lat"],
-            "lng": lng or CLUSTER_CENTRO["lon"],
+            "lat": lat,
+            "lng": lng,
             "viaje_id": viaje_activo["id"] if viaje_activo else None,
             "iniciado_en": viaje_activo["iniciado_en"] if viaje_activo else None,
             "updated_at": uc["updated_at"] if uc else None,
@@ -432,14 +451,18 @@ class MockSupabaseDB:
         limit 8;
         """
         now = datetime.now(timezone.utc)
-        if not user_id:
-            rep = self.repartidores.get(repartidor_id)
-            user_id = rep.get("usuario_id") if rep else None
+        rep = self.repartidores.get(repartidor_id)
+        if rep and not rep.get("disponible", True):
+            # §3.4: Si disponible es false, no se le ofrece nada
+            return []
+
+        if not user_id and rep:
+            user_id = rep.get("usuario_id")
 
         plataformas_activas = {
             conn["platform"]
             for conn in self.platform_connections
-            if (not user_id or conn.get("user_id") == user_id) and conn.get("is_active")
+            if user_id and conn.get("user_id") == user_id and conn.get("is_active")
         }
 
         candidatos = []
@@ -466,7 +489,7 @@ class MockSupabaseDB:
             app_info = self.apps.get(p.get("app_id"))
             app_nombre = app_info.get("nombre") if app_info else "uber"
 
-            if plataformas_activas and app_nombre not in plataformas_activas:
+            if app_nombre not in plataformas_activas:
                 continue
 
             candidatos.append({
@@ -522,21 +545,28 @@ class MockSupabaseDB:
                 if iniciado_dt.tzinfo is None:
                     iniciado_dt = iniciado_dt.replace(tzinfo=timezone.utc)
                 if iniciado_dt >= inicio_hoy:
-                    if min_iniciado_en is None or iniciado_dt < min_iniciado_en:
-                        min_iniciado_en = iniciado_dt
-
                     p = self.pedidos.get(vp.get("pedido_id"))
                     if p and p.get("estado") == "entregado":
+                        if min_iniciado_en is None or iniciado_dt < min_iniciado_en:
+                            min_iniciado_en = iniciado_dt
                         ingreso_mxn += float(p.get("precio", 0.0))
                         entregados += 1
 
         if min_iniciado_en:
             horas = max(0.1, (now - min_iniciado_en).total_seconds() / 3600.0)
         else:
-            horas = 1.5
+            # Si no hay pedidos entregados hoy, verificar inicio de viaje activo
+            viaje_activo = next((v for v in viajes_rep.values() if v.get("estado") == "activo"), None)
+            if viaje_activo and viaje_activo.get("iniciado_en"):
+                v_dt = datetime.fromisoformat(viaje_activo["iniciado_en"])
+                if v_dt.tzinfo is None:
+                    v_dt = v_dt.replace(tzinfo=timezone.utc)
+                horas = max(0.0, (now - v_dt).total_seconds() / 3600.0)
+            else:
+                horas = 0.0
 
         rho_inicial = float(self.configuracion.get("rho_inicial_mxn_h", 140.0))
-        if entregados > 0:
+        if entregados > 0 and horas > 0:
             rho_actual = max(80.0, round(ingreso_mxn / horas, 1))
         else:
             rho_actual = rho_inicial
@@ -615,6 +645,17 @@ class MockSupabaseDB:
         if viaje_id in self.viajes_repartidor:
             self.viajes_repartidor[viaje_id]["ruta_linea"] = coordenadas_ruta or []
             self.viajes_repartidor[viaje_id]["actualizado_en"] = now
+        else:
+            rep_id = self.ofertas_pedido.get(oferta_id, {}).get("repartidor_id", "rep-demo-01")
+            self.viajes_repartidor[viaje_id] = {
+                "id": viaje_id,
+                "repartidor_id": rep_id,
+                "estado": "activo",
+                "iniciado_en": now,
+                "origen_actual": {"lat": CLUSTER_CENTRO["lat"], "lon": CLUSTER_CENTRO["lon"]},
+                "ruta_linea": coordenadas_ruta or [],
+                "actualizado_en": now,
+            }
 
         return {
             "ok": True,
@@ -779,8 +820,8 @@ def construir_peticion_desde_db(
     )
 
     # 2. Consulta 2: Plan activo a bordo
-    viaje_id = estado_rep.get("viaje_id") or "viaje-demo-01"
-    pedidos_db = db.obtener_plan_activo(viaje_id)
+    viaje_id = estado_rep.get("viaje_id")
+    pedidos_db = db.obtener_plan_activo(viaje_id) if viaje_id else []
 
     plan_activo: List[PedidoActivo] = []
     for p in pedidos_db:
@@ -882,7 +923,7 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     p_conns = []
     for pc in db.platform_connections:
         p_conns.append(f"  ('{pc['user_id']}', '{pc['platform']}', {str(pc['is_active']).lower()})")
-    lines.append("INSERT INTO platform_connections (user_id, platform, is_active) VALUES\n" + ",\n".join(p_conns) + ";\n")
+    lines.append("INSERT INTO platform_connections (user_id, platform, is_active) VALUES\n" + ",\n".join(p_conns) + "\nON CONFLICT (user_id, platform) DO UPDATE SET is_active = EXCLUDED.is_active;\n")
 
     # 5. configuracion
     lines.append("-- 5. Parametros de configuracion del sistema (10 claves §3.5)")
@@ -905,7 +946,7 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
         f"INSERT INTO viajes_repartidor (id, repartidor_id, estado, iniciado_en, origen_actual) VALUES\n"
         f"  ('viaje-demo-01', 'rep-demo-01', 'activo', now() - interval '90 minutes', "
         f"st_setsrid(st_makepoint({CLUSTER_CENTRO['lon']}, {CLUSTER_CENTRO['lat']}), 4326)::geography)\n"
-        f"ON CONFLICT (id) DO NOTHING;\n"
+        f"ON CONFLICT (id) DO UPDATE SET estado = EXCLUDED.estado, origen_actual = EXCLUDED.origen_actual;\n"
     )
 
     # 8. pedidos (40)
@@ -934,14 +975,14 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     vp_vals = []
     for vp in db.viaje_pedidos:
         vp_vals.append(f"  ('{vp['viaje_id']}', '{vp['pedido_id']}', {vp['orden']}, now() - interval '15 minutes')")
-    lines.append("INSERT INTO viaje_pedidos (viaje_id, pedido_id, orden, agregado_en) VALUES\n" + ",\n".join(vp_vals) + ";\n")
+    lines.append("INSERT INTO viaje_pedidos (viaje_id, pedido_id, orden, agregado_en) VALUES\n" + ",\n".join(vp_vals) + "\nON CONFLICT (viaje_id, pedido_id) DO UPDATE SET orden = EXCLUDED.orden;\n")
 
     # 10. difusiones_pedido (25)
     lines.append("-- 10. difusiones_pedido (para los pedidos en buscando)")
     dif_vals = []
     for dif in db.difusiones_pedido:
         dif_vals.append(f"  ('{dif['id']}', '{dif['pedido_id']}', {dif['ronda']}, now())")
-    lines.append("INSERT INTO difusiones_pedido (id, pedido_id, ronda, creado_en) VALUES\n" + ",\n".join(dif_vals) + ";\n")
+    lines.append("INSERT INTO difusiones_pedido (id, pedido_id, ronda, creado_en) VALUES\n" + ",\n".join(dif_vals) + "\nON CONFLICT (id) DO NOTHING;\n")
 
     # 11. ofertas_pedido (8 pendientes)
     lines.append("-- 11. ofertas_pedido (8 ofertas pendientes con expira_en > now)")
@@ -962,9 +1003,18 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     return "\n".join(lines)
 
 
+# Soporte opcional para librería supabase-py oficial
+try:
+    from supabase import create_client as supabase_create_client
+    SUPABASE_SDK_AVAILABLE = True
+except ImportError:
+    supabase_create_client = None
+    SUPABASE_SDK_AVAILABLE = False
+
+
 class SupabaseLiveClient:
     """
-    Cliente asíncrono para interactuar con la instancia Supabase vía PostgREST / REST API.
+    Cliente asíncrono para interactuar con la instancia Supabase vía PostgREST / REST API o supabase SDK.
     Si no hay SUPABASE_URL ni SUPABASE_KEY en variables de entorno, delega transparentemente
     a MockSupabaseDB.
     """
@@ -978,6 +1028,12 @@ class SupabaseLiveClient:
         self.key = supabase_key or os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
         self.mock_db = mock_db or obtener_db()
         self.es_remoto = bool(self.url and self.key and "http" in self.url and not self.key.startswith("<"))
+        self.client_sdk = None
+        if self.es_remoto and SUPABASE_SDK_AVAILABLE and supabase_create_client:
+            try:
+                self.client_sdk = supabase_create_client(self.url, self.key)
+            except Exception:
+                self.client_sdk = None
 
     async def extraer_peticion(self, repartidor_id: str = "rep-demo-01", politica: str = "PPO") -> PeticionDecidir:
         """Extrae el estado del repartidor y construye PeticionDecidir."""

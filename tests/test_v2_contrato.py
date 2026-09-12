@@ -243,3 +243,46 @@ def test_simular_evaluar_db_repartidor_inexistente_retorna_404():
     assert res.status_code == 404
     assert "no encontrado" in res.json()["detail"]
 
+def test_politica_hibrido_aplica_p_gana_en_tasa_marginal():
+    """Valida que HÍBRIDO aplique la regla analítica Bellman con p_gana (§5.1).
+    Una oferta con tasa nominal $180/h en anillo 3 (p_gana=0.35) tiene tasa esperada ~$63/h,
+    por lo que es rechazada frente a rho_actual=$140/h; en anillo 1 (p_gana=0.85) es aceptada.
+    """
+    rep = RepartidorEstado(
+        id="rep-hibrido-pgana",
+        posicion=Punto(lat=25.6714, lon=-100.3094),
+        capacidad=3,
+        rho_actual_mxn_h=140.0,
+    )
+    t0 = datetime.now(timezone.utc)
+
+    # Oferta en Anillo 3 (radio > 3000m -> p_gana = 0.35)
+    of_anillo_3 = OfertaEntrante(
+        oferta_id="of-anillo-3",
+        pedido_id="ped-a3",
+        app="uber",
+        origen=Punto(lat=25.6800, lon=-100.3150),
+        destino=Punto(lat=25.6650, lon=-100.2980),
+        precio_mxn=60.0,
+        anillo=3,
+    )
+    dec3, _ = evaluar_oferta(rep, [], of_anillo_3, None, "HIBRIDO", t0)
+    assert dec3.riesgo.p_gana == 0.35
+    assert dec3.decision == "rechazar"
+    assert dec3.aceptar is False
+
+    # Misma oferta en Anillo 1 (p_gana = 0.85)
+    of_anillo_1 = OfertaEntrante(
+        oferta_id="of-anillo-1",
+        pedido_id="ped-a1",
+        app="uber",
+        origen=Punto(lat=25.6800, lon=-100.3150),
+        destino=Punto(lat=25.6650, lon=-100.2980),
+        precio_mxn=60.0,
+        anillo=1,
+    )
+    dec1, _ = evaluar_oferta(rep, [], of_anillo_1, None, "HIBRIDO", t0)
+    assert dec1.riesgo.p_gana == 0.85
+    assert dec1.decision == "aceptar"
+    assert dec1.aceptar is True
+

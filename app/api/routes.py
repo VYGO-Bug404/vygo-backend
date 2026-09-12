@@ -34,7 +34,7 @@ async def salud():
 async def decidir(
     peticion: PeticionDecidir,
     response: Response,
-    politica: Optional[Politica] = Query(default=None, description="Política a ejecutar (agente_ppo por defecto)"),
+    politica: Optional[Politica] = Query(default=None, description="Política a ejecutar (HIBRIDO por defecto)"),
 ) -> RespuestaDecidir:
     """
     Superficie A: Decisión puntual para ofertas entrantes.

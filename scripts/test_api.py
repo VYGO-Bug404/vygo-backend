@@ -20,7 +20,7 @@ API_BASE = "http://localhost:8000"
 
 PAYLOAD_EJEMPLO = {
   "version": "2.0",
-  "politica": "PPO",
+  "politica": "HIBRIDO",
   "repartidor": {
     "id": "8f2c1a40-1234-5678-9abc-def012345678",
     "posicion": { "lat": 25.6714, "lon": -100.3094 },
@@ -74,7 +74,7 @@ def ejecutar_pruebas(client, modo: str):
         print(f"  Decision oferta {d['oferta_id']}: {d['decision'].upper()} (aceptar={d.get('aceptar')})")
         print(f"    - Tasa marginal: ${d['tasa_marginal']:.1f}/h")
         print(f"    - Rho actual:    ${d['rho_actual']:.1f}/h")
-        print(f"    - Ajuste PPO:    {d['ajuste_aprendido']:+.1f} MXN/h")
+        print(f"    - Ajuste aprendido: {d['ajuste_aprendido']:+.1f} MXN/h")
         print(f"    - Explicacion:   {d['explicacion_corta']}")
     print(f"  Plan paradas: {len(data['plan']['paradas'])}")
     print(f"  Plan secuencia v2: {data['plan'].get('secuencia')}")
@@ -94,7 +94,7 @@ def ejecutar_pruebas(client, modo: str):
     print(f"  Mutaciones realizadas: {sim_data.get('mutaciones_escritura_bd', {})}")
 
     # 5. /simular/turno_db
-    res_turno = client.post("/simular/turno_db?repartidor_id=rep-demo-01&politica=PPO&pasos=2&persistir=true")
+    res_turno = client.post("/simular/turno_db?repartidor_id=rep-demo-01&politica=HIBRIDO&pasos=2&persistir=true")
     print(f"\n[POST /simular/turno_db] Status: {res_turno.status_code}")
     turno_data = res_turno.json()
     print(f"  Pasos simulados: {turno_data.get('pasos_simulados')}")

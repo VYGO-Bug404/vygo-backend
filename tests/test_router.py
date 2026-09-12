@@ -149,3 +149,29 @@ def test_rendimiento_branch_and_bound_8_paradas_menor_25ms():
     assert t_dur_ms < 25.0, f"DFS Branch-and-Bound tardó más de 25ms: {t_dur_ms:.2f}ms"
     print(f"8 paradas resueltas en {t_dur_ms:.2f} ms ({evals} hojas evaluadas)")
 
+def test_held_karp_mas_de_12_paradas_lanza_value_error():
+    from app.ai.sequencer import held_karp, Parada, Restricciones
+    stops = [Parada(id=f"p{i}", tipo="recogida" if i % 2 == 0 else "entrega", pos=(25.67 + i*0.001, -100.30 - i*0.001)) for i in range(14)]
+    constraints = Restricciones(capacidad=4)
+    with pytest.raises(ValueError, match="held_karp soporta hasta 12 paradas"):
+        held_karp(stops, 0.0, (25.6714, -100.3094), lambda p1, p2, t: (1.0, 1.0), constraints)
+
+def test_resolver_secuencia_mas_de_12_paradas_retorna_infactible_capacidad():
+    from app.core.router import ItemParada
+    p0 = Punto(lat=25.6714, lon=-100.3094)
+    items = [
+        ItemParada(
+            tipo="recoleccion" if i % 2 == 0 else "entrega",
+            pedido_id=f"ped-{i//2}",
+            app="uber",
+            punto=Punto(lat=25.6800 + i * 0.001, lon=-100.3150),
+            listo_min=0.0,
+            limite_min=60.0,
+            theta_frescura_min=30.0,
+        )
+        for i in range(14)
+    ]
+    sec, dist, dur, evals, motivo = resolver_secuencia_optima(p0, items, carga_inicial=0, capacidad_max=4)
+    assert sec is None
+    assert motivo == "capacidad"
+

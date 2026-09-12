@@ -132,6 +132,14 @@ def evaluar_oferta(
         ctx_dict = oferta.contexto if isinstance(oferta.contexto, dict) else oferta.contexto.model_dump()
         propina_esperada = float(ctx_dict.get("propina_esperada_mxn") or 0.0)
 
+    # Determinar anillo y p_gana de la oferta (Contrato v2.0 §5.1 & ai/vygo/baselines.py)
+    anillo = oferta.anillo or (1 if (oferta.radio_metros or 1500) <= 1500 else (2 if (oferta.radio_metros or 1500) <= 3000 else 3))
+    ctx_p_gana = None
+    if oferta.contexto:
+        ctx_d = oferta.contexto if isinstance(oferta.contexto, dict) else oferta.contexto.model_dump()
+        ctx_p_gana = ctx_d.get("p_gana") or ctx_d.get("p_gana_estimada")
+    p_gana = float(ctx_p_gana) if ctx_p_gana is not None else (0.85 if anillo == 1 else (0.60 if anillo == 2 else 0.35))
+
     # Si no es factible
     if sec_comb is None:
         d_directa = distancia_vial_km(repartidor.posicion, oferta.origen) + distancia_vial_km(oferta.origen, oferta.destino)
@@ -141,6 +149,8 @@ def evaluar_oferta(
         costo_tiempo = round(t_directo * 0.50, 2)
         g_neta = oferta.precio_mxn + propina_esperada - c_marg
         t_marg = calcular_tasa_marginal(g_neta, t_directo)
+        if pol_interna == "B2_umbral":
+            t_marg = round(t_marg * p_gana, 1)
 
         economia = Economia(
             tarifa_mxn=round(oferta.precio_mxn, 2),
@@ -162,8 +172,8 @@ def evaluar_oferta(
             holgura_frescura_min=0.0,
             holgura_limite_min=0.0,
             prob_entrega_a_tiempo=0.10,
-            p_gana=0.50,
-            anillo=oferta.anillo if oferta.anillo else 1,
+            p_gana=p_gana,
+            anillo=anillo,
             prob_retraso=0.90,
             frescura_restante=0.0,
             holgura=0.0,
@@ -221,8 +231,6 @@ def evaluar_oferta(
                 holgura_limite = max(0.0, it.limite_min - s["eta_min"])
 
     prob_a_tiempo = min(0.98, max(0.50, 0.75 + (holgura_limite / 60.0) * 0.25))
-    anillo = oferta.anillo or (1 if (oferta.radio_metros or 1500) <= 1500 else (2 if (oferta.radio_metros or 1500) <= 3000 else 3))
-    p_gana = 0.85 if anillo == 1 else (0.60 if anillo == 2 else 0.35)
 
     # Evaluación según política
     ajuste_aprendido = 0.0
@@ -233,8 +241,10 @@ def evaluar_oferta(
         if len(plan_activo) == 0 and tasa_evaluada >= 115.0:
             umbral_superado = True
     elif pol_interna == "B2_umbral":
-        # HÍBRIDO: regla analítica pura, ajuste_aprendido es estrictamente 0.0 (Contrato v2.0 §1 & §5.1)
+        # HÍBRIDO: regla analítica Bellman con p_gana, ajuste_aprendido es estrictamente 0.0 (Contrato v2.0 §1 & §5.1)
+        # tasa_marginal = p_gana * (tarifa + propina - costo) / dt_horas
         ajuste_aprendido = 0.0
+        tasa_marginal = round(tasa_marginal * p_gana, 1)
         tasa_evaluada = tasa_marginal
         umbral_superado = tasa_marginal >= rho_actual
     elif pol_interna == "B1_simple":
@@ -244,6 +254,7 @@ def evaluar_oferta(
         umbral_superado = True
     else:  # Fallback
         ajuste_aprendido = 0.0
+        tasa_marginal = round(tasa_marginal * p_gana, 1)
         tasa_evaluada = tasa_marginal
         umbral_superado = tasa_marginal >= rho_actual
 

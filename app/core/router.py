@@ -219,6 +219,8 @@ def resolver_secuencia_optima(
         return None, 0.0, 0.0, 0, "capacidad"
 
     n = len(items)
+    if n > 12:
+        return None, 0.0, 0.0, 0, "capacidad"
 
     stops: List[AIParada] = []
     r_dict = {}

@@ -67,12 +67,31 @@ def ruta_astar(
 
     segundos = 0.0
     metros = 0.0
+    polilinea: list[list[float]] = []
+
     for u, v in zip(camino[:-1], camino[1:]):
         datos = _arista_mas_rapida(G, u, v)
         segundos += datos.get("travel_time", 0.0)
         metros += datos.get("length", 0.0)
 
-    polilinea = [[float(G.nodes[n]["x"]), float(G.nodes[n]["y"])] for n in camino]
+        geom = datos.get("geometry")
+        if geom is not None:
+            xs, ys = geom.xy
+            pts = [[round(float(x), 6), round(float(y), 6)] for x, y in zip(xs, ys)]
+            if not polilinea:
+                polilinea.extend(pts)
+            else:
+                polilinea.extend(pts[1:])
+        else:
+            p_u = [round(float(G.nodes[u]["x"]), 6), round(float(G.nodes[u]["y"]), 6)]
+            p_v = [round(float(G.nodes[v]["x"]), 6), round(float(G.nodes[v]["y"]), 6)]
+            if not polilinea:
+                polilinea.append(p_u)
+            polilinea.append(p_v)
+
+    if not polilinea and camino:
+        n0 = camino[0]
+        polilinea = [[round(float(G.nodes[n0]["x"]), 6), round(float(G.nodes[n0]["y"]), 6)]]
 
     return {
         "segundos": round(segundos, 2),

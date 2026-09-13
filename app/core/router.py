@@ -33,18 +33,50 @@ from app.ai.nav.astar import ruta_vial_interpolada, ruta_astar
 
 _GRAFO_ROUTING = None
 _V_MAX_MS = 25.0
+_TREE_ROUTING = None
+_NODOS_ROUTING = None
 
 def obtener_grafo_routing():
-    global _GRAFO_ROUTING, _V_MAX_MS
+    global _GRAFO_ROUTING, _V_MAX_MS, _TREE_ROUTING, _NODOS_ROUTING
     if _GRAFO_ROUTING is None:
         try:
             from app.ai.nav.grafo import cargar_grafo_ruteable, velocidad_maxima_ms
             _GRAFO_ROUTING = cargar_grafo_ruteable()
             if _GRAFO_ROUTING is not None:
                 _V_MAX_MS = velocidad_maxima_ms(_GRAFO_ROUTING)
+                try:
+                    from scipy.spatial import cKDTree
+                    import numpy as np
+                    _NODOS_ROUTING = list(_GRAFO_ROUTING.nodes)
+                    coords_arr = np.array([[_GRAFO_ROUTING.nodes[n]["x"], _GRAFO_ROUTING.nodes[n]["y"]] for n in _NODOS_ROUTING])
+                    _TREE_ROUTING = cKDTree(coords_arr)
+                except Exception:
+                    _TREE_ROUTING = None
         except Exception:
             _GRAFO_ROUTING = False
     return _GRAFO_ROUTING if _GRAFO_ROUTING is not False else None
+
+def nodo_mas_cercano(lon: float, lat: float) -> Optional[int]:
+    global _TREE_ROUTING, _NODOS_ROUTING, _GRAFO_ROUTING
+    if _TREE_ROUTING is not None and _NODOS_ROUTING is not None:
+        try:
+            _, idx = _TREE_ROUTING.query([lon, lat])
+            return _NODOS_ROUTING[idx]
+        except Exception:
+            pass
+    if _GRAFO_ROUTING:
+        try:
+            import osmnx as ox
+            return int(ox.distance.nearest_nodes(_GRAFO_ROUTING, X=lon, Y=lat))
+        except Exception:
+            return None
+    return None
+
+# Calentar el grafo vial de Monterrey en segundo plano / import para evitar cold-start en requests
+try:
+    obtener_grafo_routing()
+except Exception:
+    pass
 
 class ItemParada:
     def __init__(
@@ -386,21 +418,29 @@ def construir_plan(
             p_origen = coords[i]
             p_destino = coords[i + 1]
             tramo = None
-            if G is not None and ox_lib is not None:
+            if G is not None:
                 try:
-                    nodo_u = int(ox_lib.distance.nearest_nodes(G, X=p_origen[0], Y=p_origen[1]))
-                    nodo_v = int(ox_lib.distance.nearest_nodes(G, X=p_destino[0], Y=p_destino[1]))
-                    tramo = ruta_astar(G, nodo_u, nodo_v, _V_MAX_MS)
+                    nodo_u = nodo_mas_cercano(p_origen[0], p_origen[1])
+                    nodo_v = nodo_mas_cercano(p_destino[0], p_destino[1])
+                    if nodo_u is not None and nodo_v is not None:
+                        tramo = ruta_astar(G, nodo_u, nodo_v, _V_MAX_MS)
                 except Exception:
                     tramo = None
 
             if not tramo or not tramo.get("polilinea"):
                 tramo = ruta_vial_interpolada(p_origen[0], p_origen[1], p_destino[0], p_destino[1])
 
+            pts = tramo.get("polilinea", [])
+            if pts:
+                if pts[0] != p_origen:
+                    pts = [p_origen] + pts
+                if pts[-1] != p_destino:
+                    pts = pts + [p_destino]
+
             if not polilinea_vial:
-                polilinea_vial.extend(tramo["polilinea"])
+                polilinea_vial.extend(pts)
             else:
-                polilinea_vial.extend(tramo["polilinea"][1:])
+                polilinea_vial.extend(pts[1:] if pts else [])
         coords = polilinea_vial
 
     costo_mxn = (distancia_km * COSTO_POR_KM_MXN) + (duracion_min * COSTO_POR_MIN_MXN)

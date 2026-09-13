@@ -15,6 +15,22 @@ lo era dentro de `build_replay.py`). Actualiza IN PLACE el campo `"decisiones"` 
 `demo/replay.json` -- todas las demás claves (`paradas`, `total_mxn`, `entregas`,
 `pedidos`, `meta`) quedan BYTE A BYTE iguales.
 
+`rho_hat` NO es la tasa realizada del turno completo (eso fue un error de la primera
+versión de este script: con un solo valor constante para las 21 aceptaciones, la
+PRIMERA entrega de vygo mostraba "te paga a $388/h, tu promedio hoy es $444/h" sobre una
+ACEPTACIÓN -- inconsistente con la propia regla del modelo, que acepta cuando la tasa
+marginal SUPERA el promedio). Se reconstruye en frío con `vygo.baselines.RhoHatMovil`
+(la MISMA clase, misma ventana de 90 min, mismo valor inicial de 100 MXN/h que usa B2 en
+vivo), alimentada cronológicamente con el ingreso neto (`pago_mxn - c_kappa*delta_km`)
+de cada entrega, en el MISMO orden en que ocurrieron -- así `rho_hat` en la decisión de
+un pedido es el promedio que el agente habría visto justo ANTES de esa entrega, no el
+promedio final de todo el turno. Aproximación honesta, no exacta: al vivo `RhoHatMovil`
+se alimenta en CADA paso de decisión (incluye el costo de tiempo entre entregas); aquí
+sólo hay eventos de entrega en `replay.json`, así que el costo de tiempo entre entregas
+no se descuenta -- el promedio reconstruido queda un poco más optimista que el real,
+pero corrige la inconsistencia cualitativa (bajo al principio del turno, sube con las
+entregas), que es lo que importa para el panel.
+
 `c_kappa` = `vygo.env.COSTO_KM_MXN` (línea 56 de `env.py`: "c_kappa: combustible +
 mantenimiento, aproximado" -- literalmente así etiquenada en el código, no un valor
 inventado para esta tarea).

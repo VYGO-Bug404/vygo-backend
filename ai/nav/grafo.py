@@ -60,6 +60,24 @@ def velocidad_maxima_ms(G: nx.MultiDiGraph) -> float:
     return max(velocidades_kph) / 3.6
 
 
+def cargar_grafo_ruteable() -> nx.MultiDiGraph:
+    """Grafo recortado al mayor componente FUERTEMENTE conexo.
+
+    Hallazgo (análisis post-Compuerta B): `cargar_grafo()` completo tiene 125
+    componentes fuertemente conexas -- la mayor cubre 14690 de 15007 nodos (97.9%); los
+    ~317 restantes son fragmentos sin salida (calles de un solo sentido que entran pero
+    no permiten volver, típico de bboxes recortados a la mitad de una vía). Si una
+    parada se pega (`nearest_nodes`) a uno de esos nodos aislados, `nx.astar_path` no
+    encuentra camino de vuelta y devuelve `None` -- no es un bug de A*, es el grafo.
+
+    Ésta es la versión que se usa para TODO lo que rutee o pegue coordenadas
+    (`nearest_nodes`, `ruta_astar`): garantiza que entre cualquier par de nodos existe
+    camino de ida Y DE VUELTA."""
+
+    G = cargar_grafo()
+    return ox.truncate.largest_component(G, strongly=True)
+
+
 if __name__ == "__main__":
     G = cargar_grafo()
     n_nodos = G.number_of_nodes()
@@ -67,3 +85,6 @@ if __name__ == "__main__":
     mb = RUTA_CACHE.stat().st_size / (1024 * 1024)
     print(f"nodos={n_nodos}  aristas={n_aristas}  archivo={RUTA_CACHE} ({mb:.2f} MB)")
     print(f"velocidad_maxima_ms={velocidad_maxima_ms(G):.2f}")
+
+    G_ruteable = cargar_grafo_ruteable()
+    print(f"grafo ruteable (mayor componente fuertemente conexa): nodos={G_ruteable.number_of_nodes()}")

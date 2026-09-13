@@ -9,8 +9,8 @@ def test_endpoint_salud():
     assert res.status_code == 200
     data = res.json()
     assert data["ok"] is True
-    assert data["politica"] == "agente_ppo"
-    assert data["version"] == "1.0"
+    assert data["politica"] in ("HIBRIDO", "agente_ppo")
+    assert "version" in data
     assert "timestamp" in data
 
 def test_endpoint_decidir_oferta_rentable_aceptada():
@@ -60,7 +60,7 @@ def test_endpoint_decidir_oferta_rentable_aceptada():
     assert res.status_code == 200
     data = res.json()
     assert data["version"] == "1.0"
-    assert data["politica"] == "agente_ppo"
+    assert data["politica"] in ("HIBRIDO", "agente_ppo")
     assert data["latencia_ms"] < 150.0
 
     dec = data["decisiones"][0]

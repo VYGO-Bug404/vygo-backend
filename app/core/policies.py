@@ -73,10 +73,16 @@ def evaluar_ajuste_aprendido_ppo(
 def normalizar_politica(pol: Optional[str]) -> Tuple[str, str]:
     """
     Retorna (politica_interna, politica_salida_v2).
-    Reconcilia 'PPO', 'HIBRIDO', 'B1', 'B2' con 'agente_ppo', 'B2_umbral', 'B1_simple'.
+    Reconcilia 'HIBRIDO', 'PPO', 'B1', 'B2' con 'B2_umbral', 'agente_ppo', 'B1_simple'.
+    Por defecto opera en modo 'HIBRIDO' (algoritmo oficial descartando PPO).
     """
     if not pol:
-        return "agente_ppo", "PPO"
+        default_env = os.getenv("POLITICA_DEFAULT", "HIBRIDO").upper()
+        if default_env in ("HIBRIDO", "B2", "B2_UMBRAL"):
+            return "B2_umbral", "HIBRIDO"
+        elif default_env in ("PPO", "AGENTE_PPO"):
+            return "agente_ppo", "PPO"
+        return "B2_umbral", "HIBRIDO"
     p = str(pol).strip()
     p_upper = p.upper()
     if p_upper in ("PPO", "AGENTE_PPO"):

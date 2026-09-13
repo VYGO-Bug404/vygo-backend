@@ -1,3 +1,4 @@
+import os
 import time
 import json
 from datetime import datetime, timezone, timedelta
@@ -23,10 +24,11 @@ async def salud():
     """
     Comprobación rápida de estado y política activa.
     """
+    politica_activa = os.getenv("POLITICA_DEFAULT", "HIBRIDO")
     return {
         "ok": True,
-        "politica": "agente_ppo",
-        "version": "1.0",
+        "politica": politica_activa,
+        "version": "2.0",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -66,15 +68,14 @@ async def decidir(
             min_fecha = min(fechas_norm)
             t0 = min_fecha - timedelta(minutes=5)
 
-    # Política deseada: prioridad query param > body > HIBRIDO (o agente_ppo si versión 1.0)
+    # Política deseada: prioridad query param > body > variable de entorno POLITICA_DEFAULT > HIBRIDO
+    default_pol = os.getenv("POLITICA_DEFAULT", "HIBRIDO")
     if politica:
         politica_solicitada: Politica = politica
     elif peticion.politica:
         politica_solicitada = peticion.politica
-    elif peticion.version == "1.0":
-        politica_solicitada = "agente_ppo"
     else:
-        politica_solicitada = "HIBRIDO"
+        politica_solicitada = default_pol  # type: ignore
 
     pol_efectiva, decisiones, plan_res, telemetria, alertas = procesar_decisiones(
         repartidor=peticion.repartidor,
@@ -114,7 +115,7 @@ async def decidir(
 @router.get("/turno/stream")
 async def turno_stream(
     escenario: int = Query(default=12, description="ID del escenario a simular"),
-    politica: Politica = Query(default="agente_ppo", description="Política a ejecutar"),
+    politica: Politica = Query(default="HIBRIDO", description="Política a ejecutar"),
     velocidad: float = Query(default=10.0, description="Factor de aceleración de tiempo"),
 ):
     """

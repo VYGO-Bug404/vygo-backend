@@ -14,3 +14,5 @@ services:
         value: production
       - key: NUMBA_CACHE_DIR
         value: /tmp/numba_cache
+      - key: POLITICA_DEFAULT
+        value: HIBRIDO

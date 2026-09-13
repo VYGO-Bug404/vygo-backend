@@ -400,12 +400,23 @@ def procesar_decisiones(
         )
         ingreso_estimado = ingreso_plan_base + mejor_oferta.precio_mxn
         plan_res = construir_plan(repartidor.posicion, sec_final or [], dist_f, dur_f, ingreso_estimado, evals_f, t0, trazar_vial=True)
+    elif ofertas:
+        # Aunque la política recomiende rechazar la oferta, generamos la geometría y paradas
+        # de la oferta evaluada para que el repartidor pueda visualizar en el mapa la ruta A* propuesta
+        oferta_eval = ofertas[0]
+        items_cand, carga_cand = generar_items_paradas(plan_activo, oferta_eval, t0)
+        sec_cand, dist_c, dur_c, evals_c, _ = resolver_secuencia_optima(
+            repartidor.posicion, items_cand, carga_cand, capacidad_max=capacidad, clima=clima, t0=t0
+        )
+        ingreso_estimado = ingreso_plan_base + oferta_eval.precio_mxn
+        plan_res = construir_plan(repartidor.posicion, sec_cand or [], dist_c, dur_c, ingreso_estimado, evals_c, t0, trazar_vial=True)
     else:
         items_act, carga_act = generar_items_paradas(plan_activo, None, t0)
         sec_act, dist_a, dur_a, evals_a, _ = resolver_secuencia_optima(
             repartidor.posicion, items_act, carga_act, capacidad_max=capacidad, clima=clima, t0=t0
         )
         plan_res = construir_plan(repartidor.posicion, sec_act or [], dist_a, dur_a, ingreso_plan_base, evals_a, t0, trazar_vial=True)
+
 
     # Telemetría calculada
     entregados_aprox = max(0, int(repartidor.minutos_turno_transcurridos // 24))

@@ -465,3 +465,77 @@ def construir_plan(
         geometria=Geometria(coordinates=coords),
         resumen=resumen,
     )
+
+
+def trazar_ruta_puntos(
+    origen: Punto,
+    destinos: List[Punto],
+    clima: str = "normal",
+) -> Tuple[List[List[float]], float, float, List[Dict[str, Any]]]:
+    """
+    Traza la polilínea continua de alta fidelidad vial (A* con curvatura OSMnx)
+    conectando origen -> destino_1 -> destino_2 -> ...
+    Garantiza que la línea parta de la posición del conductor y pase por cada punto.
+    """
+    if not destinos:
+        return [[origen.lon, origen.lat]], 0.0, 0.0, []
+
+    puntos_cadena = [origen] + destinos
+    G = obtener_grafo_routing()
+    polilinea_total: List[List[float]] = []
+    distancia_total_km = 0.0
+    duracion_total_min = 0.0
+    tramos_info: List[Dict[str, Any]] = []
+
+    for i in range(len(puntos_cadena) - 1):
+        p1 = puntos_cadena[i]
+        p2 = puntos_cadena[i + 1]
+        p_origen = [round(p1.lon, 6), round(p1.lat, 6)]
+        p_destino = [round(p2.lon, 6), round(p2.lat, 6)]
+
+        tramo = None
+        if G is not None:
+            try:
+                nodo_u = nodo_mas_cercano(p1.lon, p1.lat)
+                nodo_v = nodo_mas_cercano(p2.lon, p2.lat)
+                if nodo_u is not None and nodo_v is not None and nodo_u != nodo_v:
+                    tramo = ruta_astar(G, nodo_u, nodo_v, _V_MAX_MS)
+            except Exception:
+                tramo = None
+
+        if not tramo or not tramo.get("polilinea"):
+            tramo = ruta_vial_interpolada(p1.lon, p1.lat, p2.lon, p2.lat)
+
+        pts = tramo.get("polilinea", [])
+        if pts:
+            if pts[0] != p_origen:
+                pts = [p_origen] + pts
+            if pts[-1] != p_destino:
+                pts = pts + [p_destino]
+        else:
+            pts = [p_origen, p_destino]
+
+        # Evitar puntos duplicados en las uniones
+        if not polilinea_total:
+            polilinea_total.extend(pts)
+        else:
+            polilinea_total.extend(pts[1:] if pts else [])
+
+        m_tramo = tramo.get("metros", 0.0)
+        s_tramo = tramo.get("segundos", 0.0)
+        km_tramo = round(m_tramo / 1000.0, 2) if m_tramo > 0 else round(distancia_vial_km(p1, p2), 2)
+        min_tramo = round(s_tramo / 60.0, 1) if s_tramo > 0 else round(tiempo_viaje_min(km_tramo, clima), 1)
+
+        distancia_total_km += km_tramo
+        duracion_total_min += min_tramo
+
+        tramos_info.append({
+            "origen": p1.model_dump(),
+            "destino": p2.model_dump(),
+            "distancia_km": km_tramo,
+            "duracion_min": min_tramo,
+            "puntos": len(pts),
+        })
+
+    return polilinea_total, round(distancia_total_km, 2), round(duracion_total_min, 1), tramos_info
+

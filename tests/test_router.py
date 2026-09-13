@@ -175,3 +175,37 @@ def test_resolver_secuencia_mas_de_12_paradas_retorna_infactible_capacidad():
     assert sec is None
     assert motivo == "capacidad"
 
+
+def test_trazar_ruta_puntos_astar():
+    from app.core.router import trazar_ruta_puntos
+    p0 = Punto(lat=25.6714, lon=-100.3094)
+    destinos = [
+        Punto(lat=25.6500, lon=-100.2900),
+        Punto(lat=25.6600, lon=-100.3600),
+    ]
+    coords, dist_km, dur_min, tramos = trazar_ruta_puntos(p0, destinos)
+    assert len(coords) > 100
+    assert dist_km > 10.0
+    assert dur_min > 10.0
+    assert len(tramos) == 2
+    assert coords[0] == [-100.3094, 25.6714]
+    assert coords[-1] == [-100.3600, 25.6600]
+
+
+def test_endpoint_ruteo():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+    res = client.post("/ruteo", json={
+        "origen": {"lat": 25.6714, "lon": -100.3094},
+        "destinos": [
+            {"lat": 25.6500, "lon": -100.2900}
+        ]
+    })
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data["geometria"]["coordinates"]) > 50
+    assert data["distancia_km"] > 3.0
+    assert len(data["tramos"]) == 1
+
+

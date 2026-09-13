@@ -17,8 +17,14 @@ from app.core.schemas import (
     RespuestaCopilotoExplicar,
     PeticionCopilotoChat,
     RespuestaCopilotoChat,
+    PeticionRuteo,
+    RespuestaRuteo,
+    TramoRuteo,
+    Geometria,
+    Punto,
 )
 from app.core.policies import procesar_decisiones
+from app.core.router import trazar_ruta_puntos
 from app.core.simulator import stream_turno_sse
 from app.ai.rag.copiloto import obtener_copiloto
 
@@ -115,6 +121,30 @@ async def decidir(
         telemetria=telemetria,
         alertas=alertas,
         evento_activo=evento_activo,
+    )
+
+@router.post("/ruteo", response_model=RespuestaRuteo)
+@router.post("/ruta/astar", response_model=RespuestaRuteo)
+async def calcular_ruteo(peticion: PeticionRuteo, response: Response) -> RespuestaRuteo:
+    """
+    Ruteo vial A* de alta fidelidad sobre el grafo vial de Monterrey con curvas reales.
+    Conecta la posición del conductor (origen) con cada parada subsecuente en orden de prioridad.
+    """
+    inicio_ts = time.perf_counter()
+    coords, dist_km, dur_min, tramos = trazar_ruta_puntos(
+        origen=peticion.origen,
+        destinos=peticion.destinos,
+    )
+    latencia_ms = round((time.perf_counter() - inicio_ts) * 1000.0, 2)
+    response.headers["X-Response-Time-Ms"] = str(latencia_ms)
+
+    tramos_model = [TramoRuteo(**t) for t in tramos]
+    return RespuestaRuteo(
+        geometria=Geometria(coordinates=coords),
+        distancia_km=dist_km,
+        duracion_min=dur_min,
+        tramos=tramos_model,
+        nodos_resueltos=len(coords),
     )
 
 @router.get("/turno/stream")

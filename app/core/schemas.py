@@ -403,3 +403,26 @@ class RespuestaCopilotoChat(BaseModel):
     fuentes: List[FuenteDoc] = Field(default_factory=list)
     latencia_ms: float
 
+
+class PeticionRuteo(BaseModel):
+    origen: Punto
+    destinos: List[Punto]
+    tipo_vehiculo: Optional[str] = "moto"
+
+
+class TramoRuteo(BaseModel):
+    origen: Punto
+    destino: Punto
+    distancia_km: float
+    duracion_min: float
+    puntos: int
+
+
+class RespuestaRuteo(BaseModel):
+    geometria: Geometria
+    distancia_km: float
+    duracion_min: float
+    tramos: List[TramoRuteo] = Field(default_factory=list)
+    nodos_resueltos: int = 0
+
+

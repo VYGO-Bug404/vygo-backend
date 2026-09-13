@@ -44,7 +44,11 @@ Consecuencias de diseño, todas para no tocar el hot path:
   stream de pedidos es un proceso de fondo independiente de la política (B_SERIAL y B2
   generaron los mismos 11200 pedidos, contenido idéntico, en este escenario), así que no
   importa si esta corrida de cosecha diverge en ruteo por el mismo timing de held_karp --
-  el contenido de los pedidos no depende de eso.
+  el contenido de los pedidos no depende de eso. El diccionario `pedidos` que se escribe
+  en el JSON se FILTRA a la unión de los `pedido_id` que aparecen en `serial.paradas` y
+  `vygo.paradas` (21 de 11200 en este escenario) -- este JSON se embebe en el HTML de la
+  Fase E y las demás entradas no las usa nadie. El conteo real (11200) queda en
+  `meta.pedidos_generados_total`, no se pierde.
 
 DECISIÓN DE DISEÑO -- `"decisiones": []` aquí es intencional, no un pendiente sin
 resolver: el trío (delta_f, delta_t, ratio, rho_ref, aceptado, p_gana, anillo) se
@@ -164,12 +168,20 @@ def construir_replay() -> dict:
             surge_min = ev.inicia_min
             break
 
-    pedidos_json = {pid: {"theta_min": theta_min} for pid, theta_min in theta_min_de.items()}
+    paradas_serial = _procesar_paradas(resultado_serial["paradas"], theta_min_de)
+    paradas_vygo = _procesar_paradas(resultado_vygo["paradas"], theta_min_de)
 
-    def _empaquetar(resultado: dict) -> dict:
+    # `pedidos` sólo trae los que de verdad aparecen en alguna de las dos secuencias
+    # congeladas (21 de 11200 en este escenario) -- este JSON se va a embeber en el HTML
+    # de la Fase E, y las otras ~11179 entradas no las usa nadie. El conteo original
+    # queda en meta.pedidos_generados_total para no perder la cifra real del generador.
+    ids_usados = {p["pedido_id"] for p in paradas_serial} | {p["pedido_id"] for p in paradas_vygo}
+    pedidos_json = {pid: {"theta_min": theta_min_de[pid]} for pid in ids_usados}
+
+    def _empaquetar(paradas: list[dict], resultado: dict) -> dict:
         return {
-            "paradas": _procesar_paradas(resultado["paradas"], theta_min_de),
-            "decisiones": [],  # pendiente -- ver docstring del módulo
+            "paradas": paradas,
+            "decisiones": [],  # decisión de diseño -- ver docstring del módulo
             "total_mxn": round(resultado["ingreso"], 2),
             "entregas": int(resultado["entregados"]),
         }
@@ -181,10 +193,11 @@ def construir_replay() -> dict:
             "theta_rango_min": [15, 40],  # documentación: rango real de generator.py, no un valor fijo
             "surge_min": surge_min,
             "escala_km_por_celda": escala_km_por_celda,
+            "pedidos_generados_total": len(theta_min_de),
         },
         "pedidos": pedidos_json,
-        "serial": _empaquetar(resultado_serial),
-        "vygo": _empaquetar(resultado_vygo),
+        "serial": _empaquetar(paradas_serial, resultado_serial),
+        "vygo": _empaquetar(paradas_vygo, resultado_vygo),
     }
 
 

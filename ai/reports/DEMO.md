@@ -91,6 +91,29 @@ en esta máquina o en otra -- puede dar números distintos por este mismo presup
 reloj de pared, y eso rompería la coherencia con `reports/EVAL.md` y con el pitch.
 Commiteado en `c4e3322` (`ai/demo/replay.json`, `ai/scripts/build_replay.py`).
 
+**Segunda evidencia independiente, encontrada ya construida en el repo:**
+`ai/demo/turno_datos.json` (generado por `vygo/generar_demo.py`, para el visualizador
+canvas que ya existía antes de esta tarea) trae **B2 = 875.27 MXN** -- misma política,
+mismo escenario congelado (seed 10000), corrida distinta a la de `EVAL.md`/`replay.json`
+(888.74 MXN) y distinta también a la corrida intermedia con `_llegadas_cache` en vivo
+(737.39 MXN). Tres corridas, tres números, mismo escenario, misma política -- confirma
+que el efecto no es un artefacto de este script en particular: es el presupuesto de
+reloj de pared de `held_karp`, disparado por CUALQUIER instrumentación alrededor del
+loop de decisión, venga de donde venga.
+
+| Origen | B2 total_mxn |
+|---|---|
+| `reports/EVAL.md` / `demo/replay.json` (congelado, oficial) | 888.74 |
+| `build_replay.py`, versión con `_llegadas_cache[0]` en vivo (descartada) | 737.39 |
+| `demo/turno_datos.json` (`vygo/generar_demo.py`, visualizador preexistente) | 875.27 |
+
+**Consecuencia que se queda escrita aquí:** `turno_datos.json` **NO es fuente de verdad
+para totales** -- nunca lo fue, y menos ahora que se entiende por qué. La única fuente
+de verdad de totales es `demo/replay.json` congelado (y, detrás de él, `reports/EVAL.md`,
+inmutable). De `vygo/generar_demo.py` y su plantilla (`demo/_plantilla_turno.html`) en la
+Fase E sólo se van a reusar **fórmulas y redacción** (cómo arma el texto de una decisión,
+cómo dibuja la barra de frescura, la estructura de controles) -- **nunca sus números**.
+
 ## Decisión de diseño -- `decisiones` vacío en `replay.json`, se reconstruye en Fase D
 
 `replay.json` trae `"decisiones": []` para ambas políticas. **No es un pendiente sin

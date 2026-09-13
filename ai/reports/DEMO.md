@@ -1,0 +1,124 @@
+# Demo Nivel 1 -- Monterrey real con navegación A* propia
+
+Este documento se va llenando fase por fase (ver `ai/docs/NIVEL-1-DEMO-MTY.md`). Esta
+sección corresponde a la **Fase A**.
+
+## Fase A -- Replay (`ai/scripts/build_replay.py`)
+
+Reproduce el turno congelado seed 10000 (escenario índice 0 de `scenarios/test_30.pkl`,
+120 min, evento SURGE al minuto 60) bajo `B_SERIAL` y `B2`, reutilizando
+`vygo.evaluate.correr_escenario_con_paradas` -- el mismo mecanismo que produjo los
+números oficiales de `reports/EVAL.md` -- y lo vuelca a `demo/replay.json`.
+
+**Compuerta A: PASA.**
+
+| Política | total_mxn (JSON) | total_mxn (EVAL.md) | entregas (JSON) | entregas (EVAL.md) |
+|---|---|---|---|---|
+| B_SERIAL | 253.95 | 253.95 | 5 | 5 |
+| B2 (vygo) | 888.74 | 888.74 | 16 | 16 |
+
+Los cuatro números coinciden exactos.
+
+## Reproducibilidad -- hallazgo completo
+
+**El hallazgo, resumido:** cualquier instrumentación dentro del hot path de simulación
+(incluso de sólo lectura, sin mutar estado) puede cambiar el resultado del turno, porque
+`sequencer.held_karp` acota su enumeración exacta con un presupuesto de **reloj de
+pared**, no de tiempo de CPU ni de pasos. `reports/EVAL.md` ya documentaba esto para
+contención de CPU externa (otra sesión entrenando en la misma máquina); esta tarea
+encontró que el mismo mecanismo se dispara con el overhead de instrumentación propio del
+script, sin ningún proceso externo de por medio.
+
+**Cómo se descubrió, paso a paso:**
+
+1. Primer intento de `build_replay.py`: para separar eventos `MOVE`/`WAIT`, se envolvía
+   `env._procesar_llegada_nodo` (monkeypatch de instancia, nunca de clase) recalculando
+   el tramo de viaje puro con `env._travel_fn(pos_actual, parada.pos, env.t)`. Esa
+   versión reprodujo 253.95/5 y 888.74/16 exactos -- pasó la Compuerta A.
+2. Antes de confiar en ese resultado, se verificó si el recálculo de "tramo puro" era
+   correcto comparándolo contra el calendario real del simulador. No lo era: se
+   encontraron discrepancias (`gap`) de hasta **-399 segundos** entre lo recalculado y lo
+   que el simulador realmente había programado -- porque `sequencer._simular_adelante`
+   calendariza cada tramo con el `t`/`pos` vigentes **al momento de calendarizar**, no al
+   momento en que el vehículo de verdad llega (pueden diferir si hubo un
+   `reposicionarse` de por medio).
+3. Se corrigió para leer `env._llegadas_cache[0]` en vivo -- el valor que el simulador
+   YA calculó y tiene cacheado, no uno recalculado por el script (más alineado con
+   "reusar, no inventar"). Con ese cambio -- que sólo toca CÓMO se lee un dato para
+   clasificar eventos, sin tocar la política ni el entorno, y sin ninguna escritura --
+   el resultado de VYGO **cambió** a **737.39 MXN / 13 entregas** (antes 888.74/16).
+   B_SERIAL no cambió (253.95/5 en ambas versiones -- su plan nunca crece más allá de 1
+   pedido, así que el camino exacto de `held_karp` es trivial y no se acerca al
+   presupuesto de 25 ms).
+
+**Números concretos medidos:**
+
+| Versión de `_procesar_llegada_nodo` | VYGO total_mxn | VYGO entregas | B_SERIAL total_mxn | B_SERIAL entregas |
+|---|---|---|---|---|
+| Envuelta, recalculando con `_travel_fn` | 888.74 | 16 | 253.95 | 5 |
+| Envuelta, leyendo `_llegadas_cache[0]` | 737.39 | 13 | 253.95 | 5 |
+| Sin envolver (`correr_escenario_con_paradas` tal cual) | 888.74 | 16 | 253.95 | 5 |
+
+**Por qué pasa esto:** `sequencer._LIMITE_TIEMPO_EXACTO_S = 0.025` (25 ms), medido con
+`time.perf_counter()` dentro de `held_karp`, acota cuántas de las (hasta 90, con 3
+pedidos) secuencias válidas por precedencia se alcanzan a evaluar exactamente antes de
+conformarse con la mejor encontrada hasta ese punto (siempre verificada factible, nunca
+viola frescura -- pero no necesariamente óptima). Ese presupuesto se mide en tiempo de
+**reloj real transcurrido**, no en pasos ni en tiempo de CPU del proceso. Cualquier
+código adicional que se ejecute alrededor de las llamadas a `held_karp` -- así sea una
+sola lectura de lista en vez de una llamada a función, ambas sin efectos secundarios --
+desplaza en qué punto exacto se agota ese reloj, cambiando qué secuencias se alcanzan a
+evaluar, lo que cambia la ruta elegida, lo que cambia cuánto tiempo real transcurre para
+llegar a cada parada, lo que en cascada cambia qué ofertas ve el agente después. En 120
+minutos simulados con docenas de recalendarizaciones, ese efecto se acumula en un
+resultado financiero distinto -- no es ruido de redondeo, es una ruta y un conjunto de
+pedidos entregados genuinamente diferente (13 vs 16).
+
+**Por qué `build_replay.py` no envuelve nada:** es la única forma verificada de
+reproducir los cuatro números oficiales exactos. `ai/scripts/build_replay.py` llama
+`vygo.evaluate.correr_escenario_con_paradas` **tal cual**, sin monkeypatch de ninguna
+clase ni instancia. `MOVE` y `WAIT` no son eventos en `replay.json` por esta misma razón:
+
+- `MOVE` se deriva de posiciones consecutivas ya devueltas en `paradas` (Fase D ya hace
+  esto para trazar A* entre paradas consecutivas).
+- `WAIT` se deriva en la Fase E, al pintar, con:
+  `espera_s = (t_llegada[i+1] - t_llegada[i]) - segundos_de_Astar[i -> i+1]`. Si es
+  positiva, el repartidor llega y se queda parado (esperando la comida en el
+  restaurante); si es `<=0`, viaja todo el tramo. Cero instrumentación, cero riesgo.
+
+**`replay.json` queda CONGELADO.** No se regenera. Correr `build_replay.py` de nuevo --
+en esta máquina o en otra -- puede dar números distintos por este mismo presupuesto de
+reloj de pared, y eso rompería la coherencia con `reports/EVAL.md` y con el pitch.
+Commiteado en `c4e3322` (`ai/demo/replay.json`, `ai/scripts/build_replay.py`).
+
+## Decisión de diseño -- `decisiones` vacío en `replay.json`, se reconstruye en Fase D
+
+`replay.json` trae `"decisiones": []` para ambas políticas. **No es un pendiente sin
+resolver, es la decisión correcta dado el hallazgo de arriba:** el riesgo de timing
+existe SÓLO mientras el simulador corre bajo el presupuesto de 25 ms de reloj de pared
+de `held_karp`. En frío, sobre el plan YA CONGELADO (sin el simulador corriendo, sin ese
+reloj), no hay riesgo -- así que el trío de decisión se reconstruye post-hoc en
+`ai/scripts/build_nav.py` (Fase D), no en `build_replay.py`.
+
+**Plan para Fase D (anotado aquí, NO implementado todavía):**
+
+Para cada pedido **ACEPTADO** en el plan congelado de cada política:
+
+- `delta_f` = el pago real de ese pedido (ya está en `replay.json`, campo `pago_mxn` de
+  su evento `D`).
+- `delta_t` = (minutos del plan **CON** ese pedido) − (minutos del plan **SIN** él),
+  calculado con los tiempos reales de A* sobre la secuencia congelada -- sin correr el
+  entorno.
+- `rho_ref` = tasa **realizada** del turno completo = `total_mxn / horas`:
+  - B2: 888.74 / 2 = **444.37 MXN/h**
+  - B_SERIAL: 253.95 / 2 = **126.98 MXN/h**
+
+  Esto no es un atajo: la regla de umbral del modelo es precisamente aceptar cuando la
+  tasa marginal supera la tasa promedio acumulada -- usar la tasa realizada del turno es
+  el enunciado correcto de la regla, no una aproximación.
+- `ratio` = `(delta_f - c_kappa*delta_delta) / delta_t`.
+
+Los pedidos **RECHAZADOS no son recuperables post-hoc** -- no se sabe qué otras ofertas
+aparecieron en cada ronda que se perdió. El panel de la Fase E mostrará **sólo
+aceptaciones**, y lo dirá explícitamente ("economía de cada aceptación"). No se van a
+inventar rechazos para completar el panel.

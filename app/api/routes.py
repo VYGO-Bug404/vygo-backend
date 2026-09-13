@@ -6,16 +6,21 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 
 from app.core.schemas import (
     PeticionDecidir,
     RespuestaDecidir,
     Politica,
     EventoActivo,
+    PeticionCopilotoExplicar,
+    RespuestaCopilotoExplicar,
+    PeticionCopilotoChat,
+    RespuestaCopilotoChat,
 )
 from app.core.policies import procesar_decisiones
 from app.core.simulator import stream_turno_sse
+from app.ai.rag.copiloto import obtener_copiloto
 
 router = APIRouter()
 
@@ -351,3 +356,99 @@ async def simular_turno_db(
         "historial": historial_pasos,
         "ultimo_resultado": ultimo_resultado,
     }
+
+
+# =============================================================================
+# SUPERFICIE E: COPILOTO DE IA (RAG & EXPLICABILIDAD DE DECISIONES)
+# =============================================================================
+
+@router.post("/copiloto/explicar", response_model=RespuestaCopilotoExplicar)
+async def copiloto_explicar(peticion: PeticionCopilotoExplicar) -> RespuestaCopilotoExplicar:
+    """
+    Superficie RAG 1: Explicación táctica en lenguaje natural de la recomendación del algoritmo.
+    Combina métricas de optimización matemática con la base de conocimiento de Monterrey.
+    """
+    copiloto = obtener_copiloto()
+    resultado = copiloto.explicar_decision(
+        oferta_id=peticion.oferta_id,
+        decision=peticion.decision,
+        tasa_marginal=peticion.tasa_marginal,
+        rho_actual=peticion.rho_actual,
+        delta_km=peticion.delta_km,
+        delta_min=peticion.delta_min,
+        ganancia_neta=peticion.ganancia_neta,
+        holgura_frescura_min=peticion.holgura_frescura_min,
+        restaurante=peticion.restaurante or "Restaurante",
+        zona=peticion.zona or "centro",
+        app=peticion.app or "uber",
+    )
+    return RespuestaCopilotoExplicar(**resultado)
+
+
+@router.post("/copiloto/chat", response_model=RespuestaCopilotoChat)
+async def copiloto_chat(peticion: PeticionCopilotoChat) -> RespuestaCopilotoChat:
+    """
+    Superficie RAG 2: Asistente conversacional en ruta para resolver dudas del repartidor
+    sobre restaurantes, zonas de Monterrey, tiempos de espera y reglas de plataformas.
+    """
+    copiloto = obtener_copiloto()
+    resultado = copiloto.responder_chat(
+        pregunta=peticion.pregunta,
+        contexto_conductor=peticion.contexto_conductor,
+    )
+    return RespuestaCopilotoChat(**resultado)
+
+
+# =============================================================================
+# SUPERFICIE F: DEMOSTRACIÓN VISUAL Y GEOMETRÍA CALLE A CALLE (A*)
+# =============================================================================
+
+@router.get("/demo/geometria.json")
+async def demo_geometria():
+    """
+    Retorna la geometría de los 40 pedidos resueltos con navegación A* sobre calles reales de Monterrey.
+    """
+    ruta_archivo = Path(__file__).resolve().parent.parent / "data" / "geometria.json"
+    if not ruta_archivo.exists():
+        raise HTTPException(status_code=404, detail="Archivo app/data/geometria.json no encontrado.")
+    try:
+        with open(ruta_archivo, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return JSONResponse(content=data)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Error al leer geometria.json: {str(ex)}")
+
+
+@router.get("/demo/replay.json")
+async def demo_replay():
+    """
+    Retorna el replay pareado de la simulación de turno (Serial vs Vygo Híbrido) para la visualización gráfica.
+    """
+    ruta_archivo = Path(__file__).resolve().parent.parent / "data" / "replay_demo.json"
+    if not ruta_archivo.exists():
+        ruta_archivo = Path(__file__).resolve().parent.parent / "data" / "replay_12.json"
+    if not ruta_archivo.exists():
+        raise HTTPException(status_code=404, detail="Archivo de replay demo no encontrado.")
+    try:
+        with open(ruta_archivo, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return JSONResponse(content=data)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Error al leer replay demo: {str(ex)}")
+
+
+@router.get("/demo/turno.html", response_class=HTMLResponse)
+async def demo_visualizador():
+    """
+    Sirve el visualizador interactivo MapLibre GL JS de turno pareado (Serial vs Vygo).
+    """
+    ruta_html = Path(__file__).resolve().parent.parent / "static" / "demo" / "turno.html"
+    if not ruta_html.exists():
+        raise HTTPException(status_code=404, detail="Visualizador HTML app/static/demo/turno.html no encontrado.")
+    try:
+        with open(ruta_html, "r", encoding="utf-8") as f:
+            contenido = f.read()
+        return HTMLResponse(content=contenido, status_code=200)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Error al leer turno.html: {str(ex)}")
+

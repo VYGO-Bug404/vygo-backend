@@ -342,3 +342,64 @@ class ReplayData(BaseModel):
     version: str = "1.0"
     escenario: EscenarioReplay
     pistas: List[PistaReplay]
+
+
+# =============================================================================
+# ESQUEMAS COPILOTO RAG & EXPLICABILIDAD DE IA
+# =============================================================================
+
+class PeticionCopilotoExplicar(BaseModel):
+    oferta_id: str
+    decision: Decision = "aceptar"
+    tasa_marginal: float
+    rho_actual: float
+    delta_km: float
+    delta_min: float
+    ganancia_neta: float
+    holgura_frescura_min: Optional[float] = None
+    restaurante: Optional[str] = "Restaurante"
+    zona: Optional[str] = "centro"
+    app: Optional[str] = "uber"
+
+
+class MetricasExplicacion(BaseModel):
+    tasa_marginal_mxn_h: float
+    rho_actual_mxn_h: float
+    delta_km: float
+    delta_min: float
+    ganancia_neta_mxn: float
+
+
+class ContextoRecuperado(BaseModel):
+    id: str
+    titulo: str
+    categoria: str
+
+
+class RespuestaCopilotoExplicar(BaseModel):
+    oferta_id: str
+    decision: Decision
+    frase_corta: str
+    explicacion_copiloto: str
+    contexto_recuperado: List[ContextoRecuperado] = Field(default_factory=list)
+    metricas: MetricasExplicacion
+    latencia_ms: float
+    origen_rag: str
+
+
+class PeticionCopilotoChat(BaseModel):
+    pregunta: str
+    contexto_conductor: Optional[Dict[str, Any]] = None
+
+
+class FuenteDoc(BaseModel):
+    id: str
+    titulo: str
+
+
+class RespuestaCopilotoChat(BaseModel):
+    pregunta: str
+    respuesta: str
+    fuentes: List[FuenteDoc] = Field(default_factory=list)
+    latencia_ms: float
+

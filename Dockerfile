@@ -17,8 +17,8 @@ ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 
-# Pre-calentar el JIT de Numba durante el build para evitar latencia en la primera petición
-RUN python -c "from app.ai.sequencer import _warmup_numba; _warmup_numba(); print('Numba JIT pre-warmed successfully')"
+# Pre-calentar el JIT de Numba y el grafo vial durante el build para evitar latencia en la primera petición
+RUN python -c "from app.ai.sequencer import _warmup_numba; _warmup_numba(); from app.core.router import obtener_grafo_routing; obtener_grafo_routing(); print('JIT and Graph pre-warmed successfully')"
 
 EXPOSE 8000
 

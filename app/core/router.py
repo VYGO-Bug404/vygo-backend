@@ -69,6 +69,15 @@ def nodo_mas_cercano(lon: float, lat: float) -> Optional[int]:
             import osmnx as ox
             return int(ox.distance.nearest_nodes(_GRAFO_ROUTING, X=lon, Y=lat))
         except Exception:
+            pass
+        try:
+            import numpy as np
+            if _NODOS_ROUTING is None:
+                _NODOS_ROUTING = list(_GRAFO_ROUTING.nodes)
+            coords_arr = np.array([[_GRAFO_ROUTING.nodes[n]["x"], _GRAFO_ROUTING.nodes[n]["y"]] for n in _NODOS_ROUTING])
+            dists = (coords_arr[:, 0] - lon) ** 2 + (coords_arr[:, 1] - lat) ** 2
+            return _NODOS_ROUTING[int(np.argmin(dists))]
+        except Exception:
             return None
     return None
 

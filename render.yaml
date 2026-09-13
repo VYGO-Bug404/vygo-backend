@@ -2,7 +2,7 @@ services:
   - type: web
     name: vygo-backend
     env: python
-    buildCommand: pip install -r requirements.txt && python -c "from app.ai.sequencer import _warmup_numba; _warmup_numba()"
+    buildCommand: pip install -r requirements.txt && python -c "from app.ai.sequencer import _warmup_numba; _warmup_numba(); from app.core.router import obtener_grafo_routing; G = obtener_grafo_routing(); print('Grafo routing precalentado:', G is not None)"
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     plan: free
     region: oregon

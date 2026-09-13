@@ -529,7 +529,8 @@ class MockSupabaseDB:
         and v.iniciado_en >= date_trunc('day', now());
         """
         now = datetime.now(timezone.utc)
-        inicio_hoy = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Ventana de turno: pedidos entregados en las últimas 24 horas (jornada activa)
+        hace_24h = now - timedelta(hours=24)
 
         ingreso_mxn = 0.0
         entregados = 0
@@ -544,7 +545,7 @@ class MockSupabaseDB:
                 iniciado_dt = datetime.fromisoformat(v["iniciado_en"]) if v.get("iniciado_en") else now
                 if iniciado_dt.tzinfo is None:
                     iniciado_dt = iniciado_dt.replace(tzinfo=timezone.utc)
-                if iniciado_dt >= inicio_hoy:
+                if iniciado_dt >= hace_24h:
                     p = self.pedidos.get(vp.get("pedido_id"))
                     if p and p.get("estado") == "entregado":
                         if min_iniciado_en is None or iniciado_dt < min_iniciado_en:
@@ -877,11 +878,27 @@ def construir_peticion_desde_db(
     )
 
 
+VYGO_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "vygo.mx")
+
+def to_uuid(name: Any) -> str:
+    """
+    Convierte cualquier identificador en un UUID v5 determinista válido para PostgreSQL.
+    Si ya es un UUID válido RFC 4122, lo retorna idéntico.
+    """
+    if not name:
+        return str(uuid.uuid4())
+    s = str(name)
+    try:
+        return str(uuid.UUID(s))
+    except (ValueError, AttributeError):
+        return str(uuid.uuid5(VYGO_NAMESPACE, s))
+
 def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     """
     Genera el script SQL puro para insertar en Supabase (PostgreSQL + PostGIS)
     según el orden de llaves foráneas de la Sección 6 del contrato.
-    Garantiza el orden st_makepoint(lon, lat) para Monterrey.
+    Garantiza UUIDs canónicos válidos RFC 4122 para evitar el error 22P02,
+    y el orden st_makepoint(lon, lat) para Monterrey.
     """
     if db is None:
         db = obtener_db()
@@ -889,32 +906,36 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     lines = [
         "-- ====================================================================",
         "-- VYGO · PLAN DE INYECCIÓN DE DATOS V2.0 (12 de septiembre de 2026)",
-        "-- Reconciliado con Supabase ihmadvmoenkxanoxrwcy (11 tablas)",
+        "-- Reconciliado con Supabase ihmadvmoenkxanoxrwcy (11 tablas con UUIDs)",
         "-- ====================================================================",
         "BEGIN;",
         "",
         "-- 1. Catalogo de Apps (3)",
-        "INSERT INTO apps (id, nombre) VALUES",
-        "  (1, 'uber'),",
-        "  (2, 'rappi'),",
-        "  (3, 'didi')",
-        "ON CONFLICT (id) DO NOTHING;",
+        "INSERT INTO apps (id, nombre, activa) VALUES",
+        "  (1, 'uber', true),",
+        "  (2, 'rappi', true),",
+        "  (3, 'didi', true)",
+        "ON CONFLICT (id) DO UPDATE SET activa = EXCLUDED.activa;",
         "",
-        "-- 2. Usuarios (1 repartidor + 30 clientes)",
+        "-- 2. Usuarios (1 repartidor + 30 clientes con UUIDs válidos y tipo)",
     ]
 
     # Usuarios
     usr_vals = []
     for u in db.usuarios.values():
-        usr_vals.append(f"  ('{u['id']}', '{u['nombre']}', '{u['email']}', '{u['telefono']}')")
-    lines.append("INSERT INTO usuarios (id, nombre, email, telefono) VALUES\n" + ",\n".join(usr_vals) + "\nON CONFLICT (id) DO NOTHING;\n")
+        u_id = to_uuid(u["id"])
+        tipo = "repartidor" if "rep" in str(u["id"]) else "cliente"
+        usr_vals.append(f"  ('{u_id}', '{u['nombre']}', '{u['email']}', '{u['telefono']}', '{tipo}')")
+    lines.append("INSERT INTO usuarios (id, nombre, email, telefono, tipo) VALUES\n" + ",\n".join(usr_vals) + "\nON CONFLICT (id) DO NOTHING;\n")
 
     # 3. Repartidores
     lines.append("-- 3. Repartidor de Demo")
     rep = db.repartidores["rep-demo-01"]
+    rep_id = to_uuid(rep["id"])
+    rep_usr_id = to_uuid(rep["usuario_id"])
     lines.append(
         f"INSERT INTO repartidores (id, usuario_id, app_id, vehiculo, disponible, rating) VALUES\n"
-        f"  ('{rep['id']}', '{rep['usuario_id']}', {rep['app_id']}, '{rep['vehiculo']}', {str(rep['disponible']).lower()}, {rep['rating']})\n"
+        f"  ('{rep_id}', '{rep_usr_id}', {rep['app_id']}, '{rep['vehiculo']}', {str(rep['disponible']).lower()}, {rep['rating']})\n"
         f"ON CONFLICT (id) DO UPDATE SET disponible = true, vehiculo = '{rep['vehiculo']}';\n"
     )
 
@@ -922,8 +943,10 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     lines.append("-- 4. Conexiones de plataforma activas (3)")
     p_conns = []
     for pc in db.platform_connections:
-        p_conns.append(f"  ('{pc['user_id']}', '{pc['platform']}', {str(pc['is_active']).lower()})")
-    lines.append("INSERT INTO platform_connections (user_id, platform, is_active) VALUES\n" + ",\n".join(p_conns) + "\nON CONFLICT (user_id, platform) DO UPDATE SET is_active = EXCLUDED.is_active;\n")
+        conn_user_id = to_uuid(pc["user_id"])
+        conn_id = to_uuid(f"conn-{pc['user_id']}-{pc['platform']}")
+        p_conns.append(f"  ('{conn_id}', '{conn_user_id}', '{pc['platform']}', {str(pc['is_active']).lower()})")
+    lines.append("INSERT INTO platform_connections (id, user_id, platform, is_active) VALUES\n" + ",\n".join(p_conns) + "\nON CONFLICT (user_id, platform) DO UPDATE SET is_active = EXCLUDED.is_active;\n")
 
     # 5. configuracion
     lines.append("-- 5. Parametros de configuracion del sistema (10 claves §3.5)")
@@ -934,18 +957,21 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
 
     # 6. ubicaciones_conductores
     lines.append("-- 6. Posicion inicial del conductor (Monterrey ZM)")
+    uc_user_id = to_uuid("usr-rep-demo-01")
     lines.append(
         f"INSERT INTO ubicaciones_conductores (user_id, lat, lng, updated_at) VALUES\n"
-        f"  ('usr-rep-demo-01', {CLUSTER_CENTRO['lat']}, {CLUSTER_CENTRO['lon']}, now())\n"
+        f"  ('{uc_user_id}', {CLUSTER_CENTRO['lat']}, {CLUSTER_CENTRO['lon']}, now())\n"
         f"ON CONFLICT (user_id) DO UPDATE SET lat = EXCLUDED.lat, lng = EXCLUDED.lng, updated_at = now();\n"
     )
 
     # 7. viajes_repartidor
-    lines.append("-- 7. Viaje activo iniciado hace 90 min")
+    lines.append("-- 7. Viaje activo iniciado hace 90 min con origen y destino en Monterrey")
+    viaje_id = to_uuid("viaje-demo-01")
     lines.append(
-        f"INSERT INTO viajes_repartidor (id, repartidor_id, estado, iniciado_en, origen_actual) VALUES\n"
-        f"  ('viaje-demo-01', 'rep-demo-01', 'activo', now() - interval '90 minutes', "
-        f"st_setsrid(st_makepoint({CLUSTER_CENTRO['lon']}, {CLUSTER_CENTRO['lat']}), 4326)::geography)\n"
+        f"INSERT INTO viajes_repartidor (id, repartidor_id, estado, iniciado_en, origen_actual, destino_final) VALUES\n"
+        f"  ('{viaje_id}', '{rep_id}', 'activo', now() - interval '90 minutes', "
+        f"st_setsrid(st_makepoint({CLUSTER_CENTRO['lon']}, {CLUSTER_CENTRO['lat']}), 4326)::geography, "
+        f"st_setsrid(st_makepoint(-100.2980, 25.6650), 4326)::geography)\n"
         f"ON CONFLICT (id) DO UPDATE SET estado = EXCLUDED.estado, origen_actual = EXCLUDED.origen_actual;\n"
     )
 
@@ -958,8 +984,10 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
         o_lon, o_lat = p["origen"]["lon"], p["origen"]["lat"]
         d_lon, d_lat = p["destino"]["lon"], p["destino"]["lat"]
         creado = "now() - interval '30 minutes'" if p["estado"] == "entregado" else "now() - interval '2 minutes'"
+        pid_uuid = to_uuid(p["id"])
+        cli_uuid = to_uuid(p["cliente_id"])
         ped_vals.append(
-            f"  ('{p['id']}', {p['app_id']}, '{p['id_externo']}', '{p['cliente_id']}', "
+            f"  ('{pid_uuid}', {p['app_id']}, '{p['id_externo']}', '{cli_uuid}', "
             f"st_setsrid(st_makepoint({o_lon}, {o_lat}), 4326)::geography, '{p['origen_direccion']}', "
             f"st_setsrid(st_makepoint({d_lon}, {d_lat}), 4326)::geography, '{p['destino_direccion']}', "
             f"'{p['estado']}', '{p['clima']}', '{ctx_json}'::jsonb, {p['precio']}, '{p['moneda']}', {creado})"
@@ -974,22 +1002,31 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     lines.append("-- 9. viaje_pedidos (12 entregados + 3 a bordo con orden consecutivo 1..15)")
     vp_vals = []
     for vp in db.viaje_pedidos:
-        vp_vals.append(f"  ('{vp['viaje_id']}', '{vp['pedido_id']}', {vp['orden']}, now() - interval '15 minutes')")
-    lines.append("INSERT INTO viaje_pedidos (viaje_id, pedido_id, orden, agregado_en) VALUES\n" + ",\n".join(vp_vals) + "\nON CONFLICT (viaje_id, pedido_id) DO UPDATE SET orden = EXCLUDED.orden;\n")
+        vp_id = to_uuid(f"vp-{vp['viaje_id']}-{vp['pedido_id']}")
+        vp_viaje = to_uuid(vp["viaje_id"])
+        vp_ped = to_uuid(vp["pedido_id"])
+        vp_vals.append(f"  ('{vp_id}', '{vp_viaje}', '{vp_ped}', {vp['orden']}, now() - interval '15 minutes')")
+    lines.append("INSERT INTO viaje_pedidos (id, viaje_id, pedido_id, orden, agregado_en) VALUES\n" + ",\n".join(vp_vals) + "\nON CONFLICT (viaje_id, pedido_id) DO UPDATE SET orden = EXCLUDED.orden;\n")
 
     # 10. difusiones_pedido (25)
-    lines.append("-- 10. difusiones_pedido (para los pedidos en buscando)")
+    lines.append("-- 10. difusiones_pedido (para los pedidos en buscando con columnas exactas de Supabase)")
     dif_vals = []
     for dif in db.difusiones_pedido:
-        dif_vals.append(f"  ('{dif['id']}', '{dif['pedido_id']}', {dif['ronda']}, now())")
-    lines.append("INSERT INTO difusiones_pedido (id, pedido_id, ronda, creado_en) VALUES\n" + ",\n".join(dif_vals) + "\nON CONFLICT (id) DO NOTHING;\n")
+        dif_id = to_uuid(dif["id"])
+        dif_ped = to_uuid(dif["pedido_id"])
+        dif_vals.append(f"  ('{dif_id}', '{dif_ped}', {dif['ronda']}, 1500, 1, 'despejado', now() - interval '3 minutes')")
+    lines.append("INSERT INTO difusiones_pedido (id, pedido_id, ronda, radio_metros, total_ofertas, clima, iniciada_en) VALUES\n" + ",\n".join(dif_vals) + "\nON CONFLICT (id) DO NOTHING;\n")
 
     # 11. ofertas_pedido (8 pendientes)
     lines.append("-- 11. ofertas_pedido (8 ofertas pendientes con expira_en > now)")
     of_vals = []
     for o in db.ofertas_pedido.values():
+        of_id = to_uuid(o["id"])
+        of_ped = to_uuid(o["pedido_id"])
+        of_rep = to_uuid(o["repartidor_id"])
+        viaje_val = f"'{to_uuid(o['viaje_id'])}'" if o.get("viaje_id") else "NULL"
         of_vals.append(
-            f"  ('{o['id']}', '{o['pedido_id']}', '{o['repartidor_id']}', '{o['viaje_id']}', "
+            f"  ('{of_id}', '{of_ped}', '{of_rep}', {viaje_val}, "
             f"{o['ronda']}, {o['radio_metros']}, {o['desvio_estimado_metros']}, now() + interval '60 seconds', "
             f"'{o['clima']}', '{o['estado']}', now())"
         )

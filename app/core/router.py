@@ -29,6 +29,7 @@ from app.ai.sequencer import (
     Restricciones as AIRestricciones,
     _permutaciones_validas_por_precedencia,
 )
+from app.ai.nav.astar import ruta_vial_interpolada
 
 class ItemParada:
     def __init__(
@@ -321,6 +322,7 @@ def construir_plan(
     ingreso_total_mxn: float,
     secuencias_evaluadas: int,
     t0: datetime,
+    trazar_vial: bool = False,
 ) -> Plan:
     viaje_id = str(uuid.uuid4())
     paradas: List[Parada] = []
@@ -352,6 +354,19 @@ def construir_plan(
             )
         )
         coords.append([it.punto.lon, it.punto.lat])
+
+    # Si se solicita trazado vial para navegación en mapa (estilo Waze/Google Maps)
+    if trazar_vial and len(coords) > 1:
+        polilinea_vial: List[List[float]] = []
+        for i in range(len(coords) - 1):
+            p_origen = coords[i]
+            p_destino = coords[i + 1]
+            tramo = ruta_vial_interpolada(p_origen[0], p_origen[1], p_destino[0], p_destino[1])
+            if not polilinea_vial:
+                polilinea_vial.extend(tramo["polilinea"])
+            else:
+                polilinea_vial.extend(tramo["polilinea"][1:])
+        coords = polilinea_vial
 
     costo_mxn = (distancia_km * COSTO_POR_KM_MXN) + (duracion_min * COSTO_POR_MIN_MXN)
     duracion_h = max(duracion_min, 1.0) / 60.0

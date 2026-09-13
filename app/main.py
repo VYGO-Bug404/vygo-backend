@@ -28,7 +28,10 @@ async def add_process_time_header(request: Request, call_next):
     return response
 
 # Incluir rutas principales
+from app.ai.api.ruta import router as ruta_router
+
 app.include_router(router)
+app.include_router(ruta_router)
 
 @app.get("/")
 async def root():

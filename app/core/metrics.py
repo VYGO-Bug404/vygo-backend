@@ -47,9 +47,10 @@ def calcular_costo_marginal(delta_distancia_km: float, delta_tiempo_min: float) 
     return (delta_distancia_km * COSTO_POR_KM_MXN) + (delta_tiempo_min * COSTO_POR_MIN_MXN)
 
 def calcular_tasa_marginal(ganancia_neta_mxn: float, delta_tiempo_min: float) -> float:
-    """Tasa marginal en MXN/h = ganancia_neta / (delta_min / 60)."""
-    dt_horas = max(delta_tiempo_min, 0.5) / 60.0
-    return ganancia_neta_mxn / dt_horas
+    """Tasa marginal en MXN/h = ganancia_neta / (delta_min / 60). Acotada a rango realista [0, 500]."""
+    dt_horas = max(delta_tiempo_min, 4.0) / 60.0
+    tasa = ganancia_neta_mxn / dt_horas
+    return round(min(max(tasa, 0.0), 500.0), 1)
 
 def clasificar_zona(p: Punto) -> str:
     """Identifica si un punto cae en una de las zonas gastronómicas principales."""

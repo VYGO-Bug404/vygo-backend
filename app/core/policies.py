@@ -208,7 +208,7 @@ def evaluar_oferta(
 
     # Caso factible
     delta_km = max(0.1, dist_comb - dist_base)
-    delta_min = max(0.5, dur_comb - dur_base)
+    delta_min = max(4.0, dur_comb - dur_base)
     costo_marg = calcular_costo_marginal(delta_km, delta_min)
     costo_km = round(delta_km * 2.50, 2)
     costo_tiempo = round(delta_min * 0.50, 2)

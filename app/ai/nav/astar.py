@@ -67,36 +67,45 @@ def ruta_astar(
 
     segundos = 0.0
     metros = 0.0
-    polilinea: list[list[float]] = []
+    coords: list[list[float]] = []
 
-    for u, v in zip(camino[:-1], camino[1:]):
-        datos = _arista_mas_rapida(G, u, v)
-        segundos += datos.get("travel_time", 0.0)
-        metros += datos.get("length", 0.0)
+    for u, v in zip(camino, camino[1:]):
+        d = min(G[u][v].values(), key=lambda x: x.get("travel_time", 999999.0))
+        segundos += d.get("travel_time", 0.0)
+        metros += d.get("length", 0.0)
 
-        geom = datos.get("geometry")
-        if geom is not None:
-            xs, ys = geom.xy
-            pts = [[round(float(x), 6), round(float(y), 6)] for x, y in zip(xs, ys)]
-            if not polilinea:
-                polilinea.extend(pts)
-            else:
-                polilinea.extend(pts[1:])
+        g = d.get("geometry")
+        if g is not None:
+            pts = (
+                [[float(p[0]), float(p[1])] for p in g.coords]
+                if hasattr(g, "coords")
+                else [[float(x), float(y)] for x, y in zip(g.xy[0], g.xy[1])]
+            )
+            ax, ay = float(G.nodes[u]["x"]), float(G.nodes[u]["y"])
+            # La geometría se guarda en el sentido en que se digitalizó en OSM,
+            # que NO siempre es el sentido de avance. Hay que voltearla si el
+            # punto inicial está más lejos del nodo origen que el punto final.
+            if ((pts[0][0] - ax) ** 2 + (pts[0][1] - ay) ** 2 >
+                (pts[-1][0] - ax) ** 2 + (pts[-1][1] - ay) ** 2):
+                pts.reverse()
         else:
-            p_u = [round(float(G.nodes[u]["x"]), 6), round(float(G.nodes[u]["y"]), 6)]
-            p_v = [round(float(G.nodes[v]["x"]), 6), round(float(G.nodes[v]["y"]), 6)]
-            if not polilinea:
-                polilinea.append(p_u)
-            polilinea.append(p_v)
+            pts = [
+                [float(G.nodes[u]["x"]), float(G.nodes[u]["y"])],
+                [float(G.nodes[v]["x"]), float(G.nodes[v]["y"])],
+            ]
 
-    if not polilinea and camino:
+        if coords and (coords[-1] == pts[0] or (abs(coords[-1][0] - pts[0][0]) < 1e-7 and abs(coords[-1][1] - pts[0][1]) < 1e-7)):
+            pts = pts[1:]  # no repetir el punto de unión
+        coords.extend(pts)
+
+    if not coords and camino:
         n0 = camino[0]
-        polilinea = [[round(float(G.nodes[n0]["x"]), 6), round(float(G.nodes[n0]["y"]), 6)]]
+        coords = [[float(G.nodes[n0]["x"]), float(G.nodes[n0]["y"])]]
 
     return {
         "segundos": round(segundos, 2),
         "metros": round(metros, 2),
-        "polilinea": polilinea,
+        "polilinea": coords,
         "nodos": len(camino),
     }
 

@@ -43,6 +43,52 @@ async def salud():
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
+@router.get("/diagnostico/nav")
+async def diagnostico_nav():
+    """
+    Diagnóstico de ruteo vial con A* y grafo de Monterrey para depuración en Render/Cloud.
+    """
+    from app.core.router import obtener_grafo_routing, nodo_mas_cercano
+    from app.ai.nav.grafo import RUTA_CACHE, OSMNX_AVAILABLE
+    import sys
+
+    try:
+        import networkx as nx
+        nx_ver = nx.__version__
+    except ImportError:
+        nx_ver = None
+
+    try:
+        import scipy
+        scipy_ver = scipy.__version__
+    except ImportError:
+        scipy_ver = None
+
+    try:
+        import shapely
+        shapely_ver = shapely.__version__
+    except ImportError:
+        shapely_ver = None
+
+    G = obtener_grafo_routing()
+    nodo_test = nodo_mas_cercano(-100.3094, 25.6714) if G is not None else None
+
+    return {
+        "python": sys.version,
+        "commit": "v2.2-diagnostic",
+        "cache_exists": RUTA_CACHE.exists(),
+        "cache_size_bytes": RUTA_CACHE.stat().st_size if RUTA_CACHE.exists() else 0,
+        "osmnx_available": OSMNX_AVAILABLE,
+        "networkx_version": nx_ver,
+        "scipy_version": scipy_ver,
+        "shapely_version": shapely_ver,
+        "grafo_activo": G is not None,
+        "nodos_total": len(G.nodes) if G is not None else 0,
+        "aristas_total": len(G.edges) if G is not None else 0,
+        "nodo_mas_cercano_test": nodo_test,
+    }
+
+
 @router.post("/decidir", response_model=RespuestaDecidir)
 async def decidir(
     peticion: PeticionDecidir,

@@ -1,18 +1,30 @@
 version: '3.8'
 
 services:
-  api:
+  routing:
     build: .
-    container_name: vygo-backend
+    container_name: vygo-routing
     restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
       - PORT=8000
       - ENVIRONMENT=production
-      - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - NUMBA_CACHE_DIR=/app/.numba_cache
+      - POLITICA_DEFAULT=${POLITICA_DEFAULT:-HIBRIDO}
+      # Opcionales — dejar vacíos si no se usan Supabase ni Gemini
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    volumes:
+      # Persiste el cache de Numba JIT entre reinicios — evita recompilar en cada restart
+      - numba_cache:/app/.numba_cache
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/salud"]
       interval: 30s
-      timeout: 5s
-      retries: 3
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  numba_cache:

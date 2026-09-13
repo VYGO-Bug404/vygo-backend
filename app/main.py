@@ -1,12 +1,34 @@
 import time
+import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
+
+logger = logging.getLogger("vygo.main")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Precalentar el grafo vial A* al iniciar el servidor (importante en Docker
+    # para que la primera petición /ruteo no tenga cold-start de 5-10 s)
+    try:
+        from app.core.router import obtener_grafo_routing
+        G = obtener_grafo_routing()
+        if G is not None:
+            logger.info(f"[startup] Grafo vial listo: {len(G.nodes)} nodos, {len(G.edges)} aristas")
+        else:
+            logger.warning("[startup] Grafo vial no disponible — ruteo usará interpolación de respaldo")
+    except Exception as e:
+        logger.warning(f"[startup] Error precalentando grafo: {e}")
+    yield
+
 
 app = FastAPI(
     title="Vygo Agent API",
     description="Motor analítico de optimización de rutas y decisiones para repartidores multiapp en Monterrey (HackMTY 2026)",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Middleware CORS permisivo para permitir frontend en React desplegado en Vercel o localhost

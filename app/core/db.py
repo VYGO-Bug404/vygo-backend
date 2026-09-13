@@ -212,7 +212,7 @@ class MockSupabaseDB:
                     "destino_direccion": f"Calle Entrega {j+1}, {cluster['nombre']}",
                     "precio": round(precio, 2),
                     "moneda": "MXN",
-                    "clima": "normal",
+                    "clima": "despejado",
                     "contexto": contexto,
                     "creado_en": (now - timedelta(minutes=20 + j * 2)).isoformat(),
                     "zona": zona,
@@ -292,7 +292,7 @@ class MockSupabaseDB:
                 "radio_metros": radio,
                 "desvio_estimado_metros": desvio,
                 "expira_en": (now + timedelta(minutes=15 + i * 2)).isoformat(),
-                "clima": "normal",
+                "clima": "despejado",
                 "estado": "pendiente",
                 "ofrecida_en": now.isoformat(),
                 "respondida_en": None,
@@ -499,7 +499,7 @@ class MockSupabaseDB:
                 "radio_metros": o.get("radio_metros", 1500),
                 "desvio_estimado_metros": o.get("desvio_estimado_metros", 500.0),
                 "expira_en": o.get("expira_en"),
-                "clima": o.get("clima", p.get("clima", "normal")),
+                "clima": o.get("clima", p.get("clima", "despejado")),
                 "precio": p["precio"],
                 "app_id": p.get("app_id"),
                 "app": app_nombre,
@@ -862,11 +862,11 @@ def construir_peticion_desde_db(
                 contexto=ctx,
                 origen_direccion=o.get("origen_direccion"),
                 destino_direccion=o.get("destino_direccion"),
-                clima=o.get("clima", "normal"),
+                clima=o.get("clima", "despejado"),
             )
         )
 
-    contexto = Contexto(clima="normal", evento_activo=None)
+    contexto = Contexto(clima="despejado", evento_activo=None)
 
     return PeticionDecidir(
         version="2.0",

@@ -181,3 +181,105 @@ chico que el medido en otra corrida con otra semilla (~22 ms vs ~31 ms, ~29% má
 -- razón estructural, no un problema: `v_max_ms` corresponde a 90 km/h pero la velocidad
 típica del grafo ronda los 35 km/h, así que la heurística subestima el costo real por
 ~2.5x y poda poco. Es el precio de mantenerla admisible; nada que arreglar.
+
+## Fase D -- Proyección, geometría real y decisiones reconstruidas
+
+`ai/vygo/geo_mty.py` (nuevo, aislado -- no importa ni modifica `geo.py`): transformación
+afín rejilla -> (lat, lon), ancla en la esquina SW de `BBOX_MTY`, con un `assert` de
+sanidad que corre al importar el módulo (distancia haversine entre celdas adyacentes
+proyectadas vs `escala_km_por_celda`, dentro de 2%) -- pasa con la escala real de este
+proyecto (0.5 km/celda).
+
+`ai/scripts/build_nav.py` proyecta las 42 paradas congeladas (10 de serial + 32 de
+vygo), las pega al grafo ruteable en una sola llamada a `nearest_nodes`, corre A* real
+entre cada par de paradas consecutivas (cacheado por par de nodos), y escribe
+`demo/geometria.json`.
+
+**Snap:** las 42 paradas quedaron a menos de 300 m de su nodo más cercano (máximo
+observado: 202.2 m). Ninguna cayó fuera de la traza vial.
+
+**Compuerta D1: PASA.** 40/40 pares resueltos (0% sin resolver).
+
+| Política | km reales totales | minutos reales (A*) | km reales por entrega |
+|---|---|---|---|
+| B_SERIAL | 45.52 | 53.5 | **9.10** |
+| B2 (vygo) | 66.73 | 80.7 | **4.17** |
+
+`ms_por_consulta` (A*, sobre las consultas nuevas, no cacheadas): **7.36 ms**.
+
+**El número de gasolina del pitch:** B2 gasta más del doble de km totales que B_SERIAL
+(66.73 vs 45.52) pero **menos de la mitad de km por entrega** (4.17 vs 9.10) -- agrupar
+significa manejar más en total porque se entrega más, pero cada entrega individual sale
+más barata en combustible. Es la misma historia que ya contaba `reports/EVAL.md`
+(rho, entregados) contada ahora en kilómetros reales sobre calles reales.
+
+### Decisiones reconstruidas (D.3)
+
+**Compuerta D2: PASA.** `decisiones(serial)=5=entregas`, `decisiones(vygo)=16=entregas`.
+Sin anomalías (`delta_min<=0` o `tasa_marginal<0`) en ninguna de las 21 aceptaciones.
+`c_kappa` = `vygo.env.COSTO_KM_MXN` (`env.py:56`, "combustible + mantenimiento,
+aproximado") = **1.2 MXN/km** -- leído de la constante real, no inventado.
+`demo/replay.json` se actualizó IN PLACE, sólo el campo `"decisiones"` -- verificado con
+un hash de todo lo demás antes/después: idéntico byte a byte.
+
+**Serial** (rho_hat = 126.98 MXN/h):
+
+| pedido | tasa_marginal MXN/h |
+|---|---|
+| p12 | 231.7 |
+| p1242 | 313.9 |
+| p3311 | 122.0 |
+| p5911 | 159.9 |
+| p7894 | 165.7 |
+
+**Vygo** (rho_hat = 444.37 MXN/h):
+
+| pedido | tasa_marginal MXN/h |
+|---|---|
+| p12 | 388.0 |
+| p40 | 1532.1 |
+| p17 | 843.4 |
+| p210 | 3805.7 |
+| p2132 | 567.8 |
+| p2801 | 6863.0 |
+| p2135 | 1724.9 |
+| p2800 | 446.5 |
+| p4036 | 580.2 |
+| p4508 | 395.7 |
+| p5340 | 458.0 |
+| p5733 | 4350.5 |
+| p6250 | 352.9 |
+| p8183 | 775.2 |
+| p9059 | 985.4 |
+| p9058 | 1011.8 |
+
+**Observación honesta, no una anomalía que detenga nada (ambas cantidades salieron
+positivas, Compuerta D2 pasa tal cual está definida):** varias `tasa_marginal` de VYGO
+son enormes (hasta $6863/h, muy por encima de `rho_hat`=444/h). Es consistencia
+matemática de la fórmula, no un error: cuando B2 agrupa pedidos, insertar UNO más en una
+ruta que ya iba a pasar por ahí cuesta unos pocos minutos reales de más (`delta_min`
+chico) -- extrapolar ese costo marginal minúsculo a una tasa "por hora" completa infla
+el número. Son casos de agrupamiento muy eficiente, no un bug en el cálculo. Se reporta
+tal cual, sin suavizar ni recortar los extremos (el dato completo queda intacto en
+`replay.json`; en la Fase E el titular se topa visualmente en pantalla a partir de
+$2000/h -- ver esa sección -- pero el JSON nunca se toca).
+
+### Validación cruzada -- dos geometrías independientes, misma conclusión
+
+`reports/EVAL.md` (unidades de rejilla, sin calles reales) ya daba km por entrega de
+**6.53 -> 3.42** (B_SERIAL -> B2), razón 3.42/6.53 = **0.524**. El A* sobre calles reales
+de Monterrey (esta fase) da **9.10 -> 4.17**, razón 4.17/9.10 = **0.458**. Dos
+geometrías completamente independientes -- una abstracta sobre la rejilla del
+simulador, otra sobre el grafo vial real con sentidos únicos y distancias reales -- ,
+calculadas con código distinto, llegan a la MISMA conclusión cualitativa (VYGO gasta
+menos por entrega), y la geometría real la favorece incluso MÁS (razón menor: 0.458 <
+0.524). Esto es **corroboración del resultado, no coincidencia** -- si el efecto fuera
+un artefacto de cómo el simulador abstracto mide distancias, no tendría por qué
+sobrevivir, y mucho menos reforzarse, al proyectarlo sobre calles reales con giros,
+sentidos únicos y rutas que la rejilla nunca modeló.
+
+**Aclaración explícita, para que nadie lea la tabla al revés:** B2 recorre MÁS
+kilómetros TOTALES que B_SERIAL (66.73 km vs 45.52 km) -- pero es porque hace 16
+entregas en vez de 5, no porque sea menos eficiente. La métrica que importa para
+"gasto de gasolina" es **km por entrega**, no km totales: ahí B2 gana con claridad
+(4.17 vs 9.10).

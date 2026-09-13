@@ -994,8 +994,8 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     lines.append(
         f"INSERT INTO viajes_repartidor (id, repartidor_id, estado, iniciado_en, origen_actual, destino_final) VALUES\n"
         f"  ('{viaje_id}', '{rep_id}', 'activo', now() - interval '90 minutes', "
-        f"st_setsrid(st_makepoint({CLUSTER_CENTRO['lon']}, {CLUSTER_CENTRO['lat']}), 4326)::geography, "
-        f"st_setsrid(st_makepoint(-100.2980, 25.6650), 4326)::geography)\n"
+        f"extensions.st_setsrid(extensions.st_makepoint({CLUSTER_CENTRO['lon']}, {CLUSTER_CENTRO['lat']}), 4326)::extensions.geography, "
+        f"extensions.st_setsrid(extensions.st_makepoint(-100.2980, 25.6650), 4326)::extensions.geography)\n"
         f"ON CONFLICT (id) DO UPDATE SET estado = EXCLUDED.estado, origen_actual = EXCLUDED.origen_actual;\n"
     )
 
@@ -1012,8 +1012,8 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
         cli_uuid = to_uuid(p["cliente_id"])
         ped_vals.append(
             f"  ('{pid_uuid}', {p['app_id']}, '{p['id_externo']}', '{cli_uuid}', "
-            f"st_setsrid(st_makepoint({o_lon}, {o_lat}), 4326)::geography, '{p['origen_direccion']}', "
-            f"st_setsrid(st_makepoint({d_lon}, {d_lat}), 4326)::geography, '{p['destino_direccion']}', "
+            f"extensions.st_setsrid(extensions.st_makepoint({o_lon}, {o_lat}), 4326)::extensions.geography, '{p['origen_direccion']}', "
+            f"extensions.st_setsrid(extensions.st_makepoint({d_lon}, {d_lat}), 4326)::extensions.geography, '{p['destino_direccion']}', "
             f"'{p['estado']}', '{p['clima']}', '{ctx_json}'::jsonb, {p['precio']}, '{p['moneda']}', {creado})"
         )
     lines.append(

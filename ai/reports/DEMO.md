@@ -1,7 +1,6 @@
 # Demo Nivel 1 -- Monterrey real con navegación A* propia
 
-Este documento se va llenando fase por fase (ver `ai/docs/NIVEL-1-DEMO-MTY.md`). Esta
-sección corresponde a la **Fase A**.
+Este documento se va llenando fase por fase (ver `ai/docs/NIVEL-1-DEMO-MTY.md`).
 
 ## Fase A -- Replay (`ai/scripts/build_replay.py`)
 
@@ -145,3 +144,40 @@ Los pedidos **RECHAZADOS no son recuperables post-hoc** -- no se sabe qué otras
 aparecieron en cada ronda que se perdió. El panel de la Fase E mostrará **sólo
 aceptaciones**, y lo dirá explícitamente ("economía de cada aceptación"). No se van a
 inventar rechazos para completar el panel.
+
+## Fase B -- Grafo vial (`ai/nav/grafo.py`)
+
+Descarga (con cache) el grafo `drive` de OSMnx sobre `BBOX_MTY`, con `speed_kph` y
+`travel_time` (segundos) imputados. **Compuerta B: PASA** -- 15007 nodos, 36547 aristas,
+18.97 MB, `velocidad_maxima_ms=25.00` (90 km/h).
+
+**Bloqueo y arreglo de infraestructura, no de código:** la primera corrida falló con
+`SSLCertVerificationError` contra Overpass -- confirmado que era un problema general de
+la máquina (hasta `pypi.org` fallaba igual), causado por un proxy que intercepta HTTPS
+con una CA que Windows ya conoce pero que el bundle embebido de `certifi` no trae. Se
+resolvió con `truststore.inject_into_ssl()` al inicio del módulo (antes de importar
+`osmnx`), que hace que `ssl`/`requests` usen el almacén de certificados del sistema
+operativo en vez del bundle de `certifi` -- la verificación de certificados sigue
+activa, sólo cambia de dónde salen las CAs de confianza. No se desactivó verificación
+SSL en ningún momento.
+
+**Hallazgo -- el grafo completo NO es ruteable de punta a punta.** 125 componentes
+fuertemente conexas; la mayor cubre 14690 de 15007 nodos (97.9%), el resto son
+fragmentos sin camino de vuelta (calles de un solo sentido cortadas por el bbox). Se
+agregó `cargar_grafo_ruteable()` -- recorta al mayor componente fuertemente conexo -- y
+es la única versión que se usa para `nearest_nodes`/A* de aquí en adelante.
+
+## Fase C -- A* propio (`ai/nav/astar.py`)
+
+`heuristica_tiempo` = haversine/`v_max_ms`, admisible por construcción (ningún tramo
+real puede ser más rápido que ir en línea recta a la velocidad máxima del grafo).
+**Compuerta C: PASA** -- 3/3 pruebas, sobre 30 pares aleatorios (semilla 42) del grafo
+ruteable (14690 nodos): conexo, `segundos` coincide con Dijkstra dentro de 0.1% (0.0000%
+de desviación peor caso, 0/30 fuera de tolerancia), polilínea con al menos tantos puntos
+como nodos.
+
+A* salió más rápido que Dijkstra (30.38 ms vs 31.88 ms) pero con un margen mucho más
+chico que el medido en otra corrida con otra semilla (~22 ms vs ~31 ms, ~29% más rápido)
+-- razón estructural, no un problema: `v_max_ms` corresponde a 90 km/h pero la velocidad
+típica del grafo ronda los 35 km/h, así que la heurística subestima el costo real por
+~2.5x y poda poco. Es el precio de mantenerla admisible; nada que arreglar.

@@ -29,7 +29,22 @@ from app.ai.sequencer import (
     Restricciones as AIRestricciones,
     _permutaciones_validas_por_precedencia,
 )
-from app.ai.nav.astar import ruta_vial_interpolada
+from app.ai.nav.astar import ruta_vial_interpolada, ruta_astar
+
+_GRAFO_ROUTING = None
+_V_MAX_MS = 25.0
+
+def obtener_grafo_routing():
+    global _GRAFO_ROUTING, _V_MAX_MS
+    if _GRAFO_ROUTING is None:
+        try:
+            from app.ai.nav.grafo import cargar_grafo_ruteable, velocidad_maxima_ms
+            _GRAFO_ROUTING = cargar_grafo_ruteable()
+            if _GRAFO_ROUTING is not None:
+                _V_MAX_MS = velocidad_maxima_ms(_GRAFO_ROUTING)
+        except Exception:
+            _GRAFO_ROUTING = False
+    return _GRAFO_ROUTING if _GRAFO_ROUTING is not False else None
 
 class ItemParada:
     def __init__(
@@ -358,10 +373,30 @@ def construir_plan(
     # Si se solicita trazado vial para navegación en mapa (estilo Waze/Google Maps)
     if trazar_vial and len(coords) > 1:
         polilinea_vial: List[List[float]] = []
+        G = obtener_grafo_routing()
+        ox_lib = None
+        if G is not None:
+            try:
+                import osmnx as ox
+                ox_lib = ox
+            except ImportError:
+                ox_lib = None
+
         for i in range(len(coords) - 1):
             p_origen = coords[i]
             p_destino = coords[i + 1]
-            tramo = ruta_vial_interpolada(p_origen[0], p_origen[1], p_destino[0], p_destino[1])
+            tramo = None
+            if G is not None and ox_lib is not None:
+                try:
+                    nodo_u = int(ox_lib.distance.nearest_nodes(G, X=p_origen[0], Y=p_origen[1]))
+                    nodo_v = int(ox_lib.distance.nearest_nodes(G, X=p_destino[0], Y=p_destino[1]))
+                    tramo = ruta_astar(G, nodo_u, nodo_v, _V_MAX_MS)
+                except Exception:
+                    tramo = None
+
+            if not tramo or not tramo.get("polilinea"):
+                tramo = ruta_vial_interpolada(p_origen[0], p_origen[1], p_destino[0], p_destino[1])
+
             if not polilinea_vial:
                 polilinea_vial.extend(tramo["polilinea"])
             else:

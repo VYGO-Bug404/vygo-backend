@@ -1096,7 +1096,7 @@ class SupabaseLiveClient:
             except Exception:
                 self.client_sdk = None
 
-    async def extraer_peticion(self, repartidor_id: str = "rep-demo-01", politica: str = "PPO") -> PeticionDecidir:
+    async def extraer_peticion(self, repartidor_id: str = "rep-demo-01", politica: str = "HIBRIDO") -> PeticionDecidir:
         """Extrae el estado del repartidor y construye PeticionDecidir."""
         if not self.es_remoto:
             return construir_peticion_desde_db(repartidor_id=repartidor_id, db=self.mock_db, politica=politica)

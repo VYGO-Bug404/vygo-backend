@@ -46,12 +46,18 @@ Consecuencias de diseño, todas para no tocar el hot path:
   importa si esta corrida de cosecha diverge en ruteo por el mismo timing de held_karp --
   el contenido de los pedidos no depende de eso.
 
-Pendiente, fuera de este script a propósito: el trío de "decisiones" (delta_f, delta_t,
-ratio, rho_ref, aceptado, p_gana, anillo) que pide NIVEL-1-DEMO-MTY.md tiene EL MISMO
-riesgo (evaluarlo exige inspeccionar candidatas en cada paso, dentro del mismo hot loop
-de decisión) y no se resuelve aquí -- se deja `"decisiones": []` y se reporta como
-pregunta abierta, no se improvisa una segunda corrida instrumentada que podría divergir
-de la secuencia de `paradas` ya congelada.
+DECISIÓN DE DISEÑO -- `"decisiones": []` aquí es intencional, no un pendiente sin
+resolver: el trío (delta_f, delta_t, ratio, rho_ref, aceptado, p_gana, anillo) se
+reconstruye POST-HOC, en frío, en `ai/scripts/build_nav.py` (Fase D), sobre el plan YA
+CONGELADO -- ahí el simulador no está corriendo, no hay presupuesto de reloj de pared de
+por medio y por lo tanto no hay riesgo de reproducibilidad. Sólo se reconstruye para
+pedidos ACEPTADOS (delta_f = pago real ya en `replay.json`; delta_t = minutos del plan
+CON el pedido menos minutos del plan SIN él, con tiempos reales de A*; rho_ref = tasa
+REALIZADA del turno = total_mxn / horas, que es el enunciado correcto de la regla de
+umbral, no un atajo). Los rechazos no son recuperables post-hoc (no se sabe qué otras
+ofertas aparecieron en cada ronda) y no se inventan -- el panel de la Fase E sólo
+mostrará aceptaciones, y lo dirá explícitamente ("economía de cada aceptación"). Ver
+`reports/DEMO.md` para el detalle completo de esta decisión.
 
 Uso: python -m ai.scripts.build_replay   (o `python ai/scripts/build_replay.py` desde ai/)
 """

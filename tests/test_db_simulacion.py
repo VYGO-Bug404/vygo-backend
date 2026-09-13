@@ -180,5 +180,5 @@ def test_generador_sql_st_makepoint_lon_primero():
     assert "COMMIT;" in sql
     assert "INSERT INTO apps" in sql
     assert "INSERT INTO pedidos" in sql
-    assert "st_makepoint(-100." in sql  # Lon negativo (-100.x) primero
-    assert "geography" in sql
+    assert "POINT(-100." in sql  # Lon negativo (-100.x) primero en EWKT
+    assert "SRID=4326;POINT(" in sql

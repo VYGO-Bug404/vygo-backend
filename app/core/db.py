@@ -908,8 +908,8 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
         "-- VYGO · PLAN DE INYECCIÓN DE DATOS V2.0 (12 de septiembre de 2026)",
         "-- Reconciliado con Supabase ihmadvmoenkxanoxrwcy (11 tablas con UUIDs)",
         "-- ====================================================================",
-        "-- Asegurar extension PostGIS e incluir el esquema extensions en el search_path de Supabase",
-        "CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA extensions;",
+        "-- Asegurar extension PostGIS (funciona en public o en extensions)",
+        "CREATE EXTENSION IF NOT EXISTS postgis;",
         "SET search_path TO public, extensions;",
         "",
         "BEGIN;",
@@ -994,8 +994,8 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
     lines.append(
         f"INSERT INTO viajes_repartidor (id, repartidor_id, estado, iniciado_en, origen_actual, destino_final) VALUES\n"
         f"  ('{viaje_id}', '{rep_id}', 'activo', now() - interval '90 minutes', "
-        f"extensions.st_setsrid(extensions.st_makepoint({CLUSTER_CENTRO['lon']}, {CLUSTER_CENTRO['lat']}), 4326)::extensions.geography, "
-        f"extensions.st_setsrid(extensions.st_makepoint(-100.2980, 25.6650), 4326)::extensions.geography)\n"
+        f"'SRID=4326;POINT({CLUSTER_CENTRO['lon']} {CLUSTER_CENTRO['lat']})', "
+        f"'SRID=4326;POINT(-100.2980 25.6650)')\n"
         f"ON CONFLICT (id) DO UPDATE SET estado = EXCLUDED.estado, origen_actual = EXCLUDED.origen_actual;\n"
     )
 
@@ -1012,8 +1012,8 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
         cli_uuid = to_uuid(p["cliente_id"])
         ped_vals.append(
             f"  ('{pid_uuid}', {p['app_id']}, '{p['id_externo']}', '{cli_uuid}', "
-            f"extensions.st_setsrid(extensions.st_makepoint({o_lon}, {o_lat}), 4326)::extensions.geography, '{p['origen_direccion']}', "
-            f"extensions.st_setsrid(extensions.st_makepoint({d_lon}, {d_lat}), 4326)::extensions.geography, '{p['destino_direccion']}', "
+            f"'SRID=4326;POINT({o_lon} {o_lat})', '{p['origen_direccion']}', "
+            f"'SRID=4326;POINT({d_lon} {d_lat})', '{p['destino_direccion']}', "
             f"'{p['estado']}', '{p['clima']}', '{ctx_json}'::jsonb, {p['precio']}, '{p['moneda']}', {creado})"
         )
     lines.append(

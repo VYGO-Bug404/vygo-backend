@@ -14,3 +14,5 @@ ai/**/__pycache__/
 ai/*.egg-info
 ai/scenarios/*.pkl
 ai/reports/*.log
+ai/nav/cache/
+ai/cache/

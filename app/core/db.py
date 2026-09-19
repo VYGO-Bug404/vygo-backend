@@ -216,6 +216,8 @@ class MockSupabaseDB:
                     "contexto": contexto,
                     "creado_en": (now - timedelta(minutes=20 + j * 2)).isoformat(),
                     "zona": zona,
+                    "ganancia": None,
+                    "repartidor_id": None,
                 })
 
         # Distribuir los 40 pedidos: 12 entregados, 3 asignados (a bordo), 25 buscando
@@ -590,11 +592,13 @@ class MockSupabaseDB:
         viaje_id: str,
         nuevo_orden_secuencia: List[Tuple[str, int]],
         coordenadas_ruta: Optional[List[List[float]]] = None,
+        ganancia_neta: Optional[float] = None,
+        repartidor_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Ejecuta las mutaciones de escritura al aceptar una oferta (§5.3):
           1. ofertas_pedido: estado = 'aceptada', respondida_en = now(), viaje_id = :viaje_id
-          2. pedidos: estado = 'asignado', aceptado_en = now()
+          2. pedidos: estado = 'asignado', aceptado_en = now(), ganancia, repartidor_id
           3. ofertas_pedido (otras): estado = 'perdida'
           4. viaje_pedidos: inserción y reescritura COMPLETA del orden de paradas
           5. viajes_repartidor: ruta_linea y actualizado_en = now()
@@ -611,6 +615,10 @@ class MockSupabaseDB:
         if pedido_id in self.pedidos:
             self.pedidos[pedido_id]["estado"] = "asignado"
             self.pedidos[pedido_id]["aceptado_en"] = now
+            if ganancia_neta is not None:
+                self.pedidos[pedido_id]["ganancia"] = ganancia_neta
+            if repartidor_id is not None:
+                self.pedidos[pedido_id]["repartidor_id"] = repartidor_id
 
         # 3. Ofertas perdidas para el mismo pedido
         ofertas_perdidas = 0
@@ -1014,10 +1022,12 @@ def generar_sql_inyeccion_completo(db: Optional[MockSupabaseDB] = None) -> str:
             f"  ('{pid_uuid}', {p['app_id']}, '{p['id_externo']}', '{cli_uuid}', "
             f"'SRID=4326;POINT({o_lon} {o_lat})', '{p['origen_direccion']}', "
             f"'SRID=4326;POINT({d_lon} {d_lat})', '{p['destino_direccion']}', "
-            f"'{p['estado']}', '{p['clima']}', '{ctx_json}'::jsonb, {p['precio']}, '{p['moneda']}', {creado})"
+            f"'{p['estado']}', '{p['clima']}', '{ctx_json}'::jsonb, {p['precio']}, '{p['moneda']}', {creado}, "
+            f"{p.get('ganancia') if p.get('ganancia') is not None else 'NULL'}, "
+            f"'{to_uuid(p['repartidor_id'])}'" if p.get('repartidor_id') else "NULL)"
         )
     lines.append(
-        "INSERT INTO pedidos (id, app_id, id_externo, cliente_id, origen, origen_direccion, destino, destino_direccion, estado, clima, contexto, precio, moneda, creado_en) VALUES\n"
+        "INSERT INTO pedidos (id, app_id, id_externo, cliente_id, origen, origen_direccion, destino, destino_direccion, estado, clima, contexto, precio, moneda, creado_en, ganancia, repartidor_id) VALUES\n"
         + ",\n".join(ped_vals)
         + "\nON CONFLICT (id) DO NOTHING;\n"
     )
@@ -1086,7 +1096,7 @@ class SupabaseLiveClient:
         mock_db: Optional[MockSupabaseDB] = None,
     ):
         self.url = supabase_url or os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
-        self.key = supabase_key or os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
+        self.key = supabase_key or os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
         self.mock_db = mock_db or obtener_db()
         self.es_remoto = bool(self.url and self.key and "http" in self.url and not self.key.startswith("<"))
         self.client_sdk = None
@@ -1125,6 +1135,8 @@ class SupabaseLiveClient:
         viaje_id: str,
         nuevo_orden: List[Tuple[str, int]],
         coords: Optional[List[List[float]]] = None,
+        ganancia_neta: Optional[float] = None,
+        repartidor_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Persiste la aceptación de la oferta en la base de datos."""
         res_mock = self.mock_db.persistir_decision_aceptar(
@@ -1133,6 +1145,8 @@ class SupabaseLiveClient:
             viaje_id=viaje_id,
             nuevo_orden_secuencia=nuevo_orden,
             coordenadas_ruta=coords,
+            ganancia_neta=ganancia_neta,
+            repartidor_id=repartidor_id,
         )
 
         if self.es_remoto:
@@ -1140,7 +1154,12 @@ class SupabaseLiveClient:
                 headers = {"apikey": self.key, "Authorization": f"Bearer {self.key}"}
                 async with httpx.AsyncClient(base_url=self.url, headers=headers, timeout=5.0) as client:
                     await client.patch(f"/rest/v1/ofertas_pedido?id=eq.{oferta_id}", json={"estado": "aceptada"})
-                    await client.patch(f"/rest/v1/pedidos?id=eq.{pedido_id}", json={"estado": "asignado"})
+                    payload = {"estado": "asignado"}
+                    if ganancia_neta is not None:
+                        payload["ganancia"] = ganancia_neta
+                    if repartidor_id is not None:
+                        payload["repartidor_id"] = repartidor_id
+                    await client.patch(f"/rest/v1/pedidos?id=eq.{pedido_id}", json=payload)
             except Exception as ex:
                 logger.warning(f"Error en persistencia remota Supabase: {ex}")
 

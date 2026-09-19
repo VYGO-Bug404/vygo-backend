@@ -356,6 +356,8 @@ async def simular_evaluar_db(
                 viaje_id=viaje_id,
                 nuevo_orden_secuencia=nuevo_orden,
                 coordenadas_ruta=coords,
+                ganancia_neta=mejor.economia.ganancia_neta_mxn,
+                repartidor_id=repartidor_id,
             )
 
     verificaciones = verificaciones_previas

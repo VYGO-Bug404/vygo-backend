@@ -100,6 +100,8 @@ class PedidoActivo(BaseModel):
     contexto: Optional[Union[PedidoContexto, Dict[str, Any]]] = None
     origen_direccion: Optional[str] = None
     destino_direccion: Optional[str] = None
+    ganancia: Optional[float] = None
+    repartidor_id: Optional[str] = None
 
     def model_post_init(self, __context: Any) -> None:
         if self.contexto:
